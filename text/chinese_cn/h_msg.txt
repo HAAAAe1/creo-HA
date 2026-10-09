@@ -1,0 +1,88 @@
+﻿BALLOON_PICK
+Click to place balloon.
+请点击图纸位置放置球标。
+#
+BALLOON_PICK_MORE
+Click to place another balloon. Middle or right button to finish.
+继续点击放置球标；按中键或右键结束。
+#
+BALLOON_ADD_MULTI_OK
+Continuous placement finished.
+连续放置已结束。
+#
+BALLOON_INSERT_PICK
+Click the position for the new balloon.
+请点击要放置新球标的位置。
+#
+BALLOON_INSERT_REF
+Click an existing balloon: the new one is inserted before it and takes its number; that number and every number after it shift by +1.
+请点选一个已有球标：新球标插在它前面并使用该编号，该编号及其后的球标全部自动 +1。
+#
+BALLOON_INSERT_OK
+Balloon inserted; following numbers shifted up by one.
+球标已插入，其后序号已自动顺延。
+#
+BALLOON_ADD_OK
+Balloon added.
+球标已添加。
+#
+BALLOON_RENUM_OK
+Numbers renumbered to 1,2,3...
+序号已重排为 1,2,3...
+#
+BALLOON_DELETE_OK
+Balloon deleted.
+球标已删除。
+#
+BALLOON_NO_DRAWING
+Please run this command in a drawing.
+请在工程图界面执行此命令。
+#
+BALLOON_NO_SYMBOL
+Cannot load the balloon symbol file. See h_load.log in the plugin folder.
+球标符号加载失败，原因见插件目录下的 h_load.log。
+#
+BALLOON_NO_BALLOON
+No balloon found.
+未找到任何球标。
+#
+BALLOON_FAILED
+Operation failed, please retry.
+操作失败，请检查后重试。
+#
+H_AddBalloon
+Add Balloon
+添加球标
+#
+H_AddBalloon.Help
+Click a position on the drawing to place a numbered balloon. The number increments automatically (1,2,3...).
+在工程图上点击位置放置圆圈球标，编号自动递增（1、2、3…）；可连续点击连续放置，按中键或右键结束
+#
+H_InsertBalloon
+Insert Balloon
+插入球标
+#
+H_InsertBalloon.Help
+Insert a balloon in the middle of the sequence: click the placement point, then click an existing balloon. The new balloon takes that number and every following number shifts up by one.
+插入球标并顺延序号：先点放置位置，再点一个已有球标；新球标使用该编号，其后所有序号自动 +1
+#
+H_DeleteBalloon
+Delete Balloon
+删除球标
+#
+H_DeleteBalloon.Help
+Click to select a balloon and delete it. The rest are renumbered automatically.
+点击选择要删除的球标，删除后其余序号自动重排
+#
+H_RenumberBalloon
+Renumber
+重排序号
+#
+H_RenumberBalloon.Help
+Compact all balloon numbers back to 1,2,3... (use it to close the gaps left after deleting).
+把所有球标的编号压实为 1、2、3…（用于补齐删除后留下的空号）
+#
+Balloon
+Balloon
+球标
+#

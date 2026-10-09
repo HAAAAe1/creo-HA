@@ -1,0 +1,13 @@
+# 运行时生成
+h_load.log
+
+# 编译产物
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.res
+
+# 打包
+*.zip

@@ -1,0 +1,66 @@
+﻿BALLOON_PICK
+Click to place balloon.
+#
+BALLOON_PICK_MORE
+Click to place another balloon. Middle or right button to finish.
+#
+BALLOON_ADD_MULTI_OK
+Continuous placement finished.
+#
+BALLOON_INSERT_PICK
+Click the position for the new balloon.
+#
+BALLOON_INSERT_REF
+Click an existing balloon: the new one is inserted before it and takes its number; that number and every number after it shift by +1.
+#
+BALLOON_INSERT_OK
+Balloon inserted; following numbers shifted up by one.
+#
+BALLOON_ADD_OK
+Balloon added.
+#
+BALLOON_RENUM_OK
+Numbers renumbered to 1,2,3...
+#
+BALLOON_DELETE_OK
+Balloon deleted.
+#
+BALLOON_NO_DRAWING
+Please run this command in a drawing.
+#
+BALLOON_NO_SYMBOL
+Cannot load the balloon symbol file. See h_load.log in the plugin folder.
+#
+BALLOON_NO_BALLOON
+No balloon found.
+#
+BALLOON_FAILED
+Operation failed, please retry.
+#
+H_AddBalloon
+Add Balloon
+#
+H_AddBalloon.Help
+Click a position on the drawing to place a numbered balloon. The number increments automatically (1,2,3...). Keep clicking to place several in a row; middle or right button finishes.
+#
+H_InsertBalloon
+Insert Balloon
+#
+H_InsertBalloon.Help
+Insert a balloon in the middle of the sequence: click the placement point, then click an existing balloon. The new balloon takes that number and every following number shifts up by one.
+#
+H_DeleteBalloon
+Delete Balloon
+#
+H_DeleteBalloon.Help
+Click to select a balloon and delete it. The rest are renumbered automatically.
+#
+H_RenumberBalloon
+Renumber
+#
+H_RenumberBalloon.Help
+Compact all balloon numbers back to 1,2,3... (use it to close the gaps left after deleting).
+#
+Balloon
+Balloon
+#

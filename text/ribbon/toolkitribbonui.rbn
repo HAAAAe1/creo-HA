@@ -1,0 +1,123 @@
+#UGC:2 NEUTRAL 1863 440 800 0 0 0 0 0 00000000 \
+#- VERS 0 0                                                          \
+#- HOST                                                              \
+#- LINK                                                              \
+#- DBID                                                              \
+#- REVS 0,                                                           \
+#- RELL 0,                                                           \
+#- UOBJ_ID 0 0 0                                                     \
+#- MACH                                                              \
+#-END_OF_UGC_HEADER
+#Creo  TM  4.0  (c) 2015 by PTC Inc.  All Rights Reserved. U180
+0 RbnDBData ->
+1 onCreation 
+2 mNumComments 0
+2 mDate 
+1 groupList [1]
+2 groupList 
+3 ChildUnion(RbnDBGroup) ->
+4 RbnDBInheritContainer 
+5 mName user_custom_group_h_balloon
+5 mType 12
+5 mLabel Balloon
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [4]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_AddBalloon
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue Large
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_InsertBalloon
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue Large
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_DeleteBalloon
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue Large
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_RenumberBalloon
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue Large
+4 mToolLauncher 
+4 mBitmap 
+4 mPlugin 
+4 mGroupType 1
+1 pageList [1]
+2 pageList 
+3 ChildUnion(RbnDBPage) ->
+4 RbnDBInheritContainer 
+5 mName page_H_Balloon@drw_main_adb_cat
+5 mType 11
+5 mLabel Balloon
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [1]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_balloon
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mCloseButton 
+4 mPlugin 
+1 ribbonList [1]
+2 ribbonList 
+3 ChildUnion(RbnDBRibbon) ->
+4 RbnDBContainer 
+5 mName drw_main_adb_cat
+5 mType 10
+5 Attributes 
+5 containerChildrenArray [2]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPosition) ->
+8 mName EOF
+8 mType 7
+8 Attributes 
+8 mIndex -1
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPageRef) ->
+8 mName page_H_Balloon@drw_main_adb_cat
+8 mType 16
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+1 modeList [1]
+2 modeList 
+3 ChildUnion(RbnDBMode) ->
+4 RbnDBContainer 
+5 mName drw_main_adb_cat
+5 mType 9
+5 Attributes 
+4 mRibbon drw_main_adb_cat
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+1 mIncrementalAttrs 1
+0 ULCFileHeader 
+1 mAppName CreoPMA
+#END_OF_UGC
