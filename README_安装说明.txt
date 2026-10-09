@@ -42,7 +42,7 @@
   text\toolkitribbonui.rbn      同上，留一份在 text 根目录作保险
   text\chinese_cn\h_msg.txt     中文界面文字与按钮名称
   text\usascii\h_msg.txt        英文界面文字
-  symbols\3hao.sym              圆形球标符号（数字为可变文本）
+  symbols\123.sym              圆形球标符号（数字为可变文本）
   src\h_main.c                  插件源码
   makefile / build.bat          重新编译用
   setup.bat                     一键把 H.dat 里的路径改成当前文件夹
@@ -138,7 +138,7 @@ Creo 版本对 rbn 更挑剔而没生效，手工补一次即可（对同一版�
                                       那是「命令描述」这一栏没配，
                                       不影响按钮功能，可忽略）
       ProRibbonDefinitionfileLoad(...) -> 0   功能区定义文件加载成功
-      HLoadSymbol: <目录>\symbols\3hao.sym -> EXISTS / MISSING!
+      HLoadSymbol: <目录>\symbols\123.sym -> EXISTS / MISSING!
                                       符号文件在不在（MISSING! 表示发出去的
                                       包不完整，少了 symbols 文件夹）
       HLoadSymbol: [1] "." -> 0       第 1 条路成功（相对 pro_symbol_dir）
@@ -174,7 +174,7 @@ Creo 版本对 rbn 更挑剔而没生效，手工补一次即可（对同一版�
       在别人机器上第一次报这个错的原因，现已改为三条路依次尝试。
 
       1) 先看日志那行 EXISTS / MISSING!：
-         MISSING! 说明 H.dll 旁边根本没有 symbols\3hao.sym，
+         MISSING! 说明 H.dll 旁边根本没有 symbols\123.sym，
          就是发出去的包不完整 —— 重新完整解压 H.zip 即可。
       2) 三条路各自失败的原因：
          [1] 相对 pro_symbol_dir（没设=工作目录）——对方既没设
@@ -183,13 +183,13 @@ Creo 版本对 rbn 更挑剔而没生效，手工补一次即可（对同一版�
              放在网盘、只读盘）时会失败；
          [3] 绝对目录加载——最后兜底。
       3) 手动兜底（立刻可用，二选一）：
-         · 把 H\symbols\3hao.sym 复制到 Creo 当前工作目录（就是打开
+         · 把 H\symbols\123.sym 复制到 Creo 当前工作目录（就是打开
            工程图时"工作目录"那一栏显示的文件夹），再点一次按钮；
          · 或在 config.pro 里把 pro_symbol_dir 指向 H\symbols：
                pro_symbol_dir D:\H\symbols
            注意：如果 config.pro 里【已经有】pro_symbol_dir 这一行，
            就不要再加第二行（会冲突），直接把它指向的那个目录里放一份
-           3hao.sym 即可。
+           123.sym 即可。
   * 提示「请在工程图界面执行此命令」
       这三个命令只能在工程图（Drawing）中使用，先打开一张工程图。
   * 日志里 ProCmdDesignate(...) -> -28
@@ -263,7 +263,7 @@ Creo 版本对 rbn 更挑剔而没生效，手工补一次即可（对同一版�
   八、球标符号文件（决定同事的电脑能不能用）
 ====================================================================
 
-  symbols\3hao.sym 就是球标的样子：一个圆圈 + 中间一个序号变量。
+  symbols\123.sym 就是球标的样子：一个圆圈 + 中间一个序号变量。
 
   ★ Creo 的文件只"向上兼容"：新版 Creo 能读旧版文件，
     旧版 Creo 读不了新版文件。符号文件 .sym 一模一样。
@@ -278,7 +278,7 @@ Creo 版本对 rbn 更挑剔而没生效，手工补一次即可（对同一版�
       Creo 3.0 = 3400      Creo 6.0 = 3700      Creo 12 = 4300
 
   ⚠ 三条规矩：
-    · 本插件用的是 3hao.sym（Creo 6.0.2.0 存出，格式级别 3700），
+    · 本插件用的是 123.sym（Creo 6.0.2.0 存出，格式级别 3700），
       Creo 6 / 7 / 8 / 9 / 10 / 11 / 12 全都能读，一份通吃。
     · 千万别用新版 Creo 打开它再"保存" —— 保存会把它升级成新版格式，
       同事的 Creo 6 立刻就读不了了。
@@ -293,7 +293,7 @@ Creo 版本对 rbn 更挑剔而没生效，手工补一次即可（对同一版�
     格式级别 4300，正文还带 symbol_font / p_sym_param 等 Creo 8/9
     才有的字段）。它在 Creo 12 上完全正常，但在 Creo 6 上被 Creo 自己
     拒绝解析 —— 光把头部版本号改成 Creo 3.0 也没救，因为正文字段本身
-    就是新版才有的。换成 Creo 6 存出的 3hao.sym 后彻底解决。
+    就是新版才有的。换成 Creo 6 存出的 123.sym 后彻底解决。
 ====================================================================
   九、Creo 自己起不来时（授权问题，与本插件无关）
 ====================================================================

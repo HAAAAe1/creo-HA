@@ -4,7 +4,7 @@
             - 不依赖 BOM 表，独立的符号实例
             - 点一下放一个圆圈球标，编号自动 +1（1、2、3…）
             - 删除任意球标后自动重排（删 1，原 2 变 1）
-            - 符号载体：symbols\111.sym（圆形球标，可变文本 = 数字）
+            - 符号载体：symbols\123.sym（圆形球标，可变文本 = 数字）
 
   BUILD   : 面向 Creo 6.0 Toolkit 编译（MSVC x64）
             PTC 官方兼容规则：用较旧版本的 Toolkit 编译出的 DLL，可以在
@@ -43,6 +43,12 @@
 #include <ProWstring.h>
 #include <ProDtlsyminst.h>
 #include <ProDtlsymdef.h>
+
+/* 注：这里曾经有一大段直接调 Win32 的「Esc 监听 + 光标离开图形区监听」代码，
+   是为了配合自定义的跟随预览循环。现在拾取已换回 Creo 原生的
+   ProMousePickGet（见 HPickPlacePoint），Esc / 缩放 / 切换命令全由 Creo
+   自己处理，这段 Win32 兜底代码整体删除。 */
+
 #include <ProDtlitem.h>
 #include <ProDtlattach.h>
 #include <ProDtlnote.h>
@@ -74,18 +80,19 @@
 
 /* 符号文件（放在 <插件目录>\symbols 下，不带扩展名传给 API；
    文件名 = SYMNAME + ".sym"，且文件【内部名】= 文件名的全大写，
-   这是 Creo 自己的规矩，所以这里必须与 symbols\3hao.sym 完全对应）。
+   这是 Creo 自己的规矩，所以这里必须与 symbols\123.sym 完全对应）。
 
-   ★ 为什么是 3hao 而不是 111：
+   ★ 版本规矩（踩过坑）：
    Creo 的文件只向上兼容 —— 新版能读旧版，旧版读不了新版。
-   原来的 111.sym 是 Creo 12.4 存出来的（头部 "#Creo TM 12 ... 12.4.0.0"，
+   所以这个符号必须用【目标机器上最老的那个 Creo 版本】存出来。
+   曾经用过的 111.sym 是 Creo 12.4 存的（头部 "#Creo TM 12 ... 12.4.0.0"，
    格式级别 4300，正文还带 symbol_font / p_sym_param 等 Creo 8/9 才有的字段），
    在 Creo 6 上 ProDrawingDtlsymdefRetrieve 必然失败。
-   3hao.sym 是用 Creo 6.0.2.0 存出来的（格式级别 3700），
+   现在的 123.sym 是用 Creo 6.0.2.0 存的（格式级别 3700），
    没有任何新版本字段 —— Creo 6/7/8/9/10/11/12 全部可读。
    ⚠ 以后千万不要用新版 Creo 打开它再另存，那会把它升级成新版格式，
      同事的 Creo 6 就又读不了了。 */
-#define SYMNAME     "3hao"
+#define SYMNAME     "123"
 
 /* 命令 ID —— 统一加 H_ 前缀，避免与其它插件的命令重名。
    这三个名字必须与 text\toolkitribbonui.rbn 里的 mName 以及
@@ -537,6 +544,72 @@ static int HShiftNumbers(ProMdl drawing, int from_num, int delta)
     return done;
 }
 
+/*---------------------------------------------------------------------*\
+   打印并返回「符号文件自带的附着点」。
+
+   ★ 这里【只读不写】—— 绝不覆盖符号的附着点。
+
+   为什么：Creo 放置符号实例时，是拿符号定义自带的附着点去对齐鼠标位置的。
+   官方示例 pt_graphics\TestDtlsyminst.c 的 ProTestAttachGet() 就是先
+   ProDtlsymdefdataAttachGet() 把附着点读出来，再把它的【类型】交给
+   ProDtlsyminstdataAttachtypeSet()；放置位置则由
+   ProDtlsyminstdataAttachmentSet() 用鼠标拾取点决定。
+
+   之前我们额外调用了 ProDtlsyminstdataDefattachSet()，把附着点强改成
+   FREE @ 符号原点 (0,0,0)，前提假设是「圆心画在符号原点」。实测该假设
+   不成立 —— 结果球标偏得更远（本机 Creo 12 也偏）。所以退回官方做法：
+   附着点完全交给符号文件，插件一个字节都不改。
+
+   返回值：符号定义里第一个附着点的类型（读不到时退回 FREE）。
+\*---------------------------------------------------------------------*/
+static ProDtlsymdefattachType HDumpSymdefAttach(void)
+{
+    ProDtlsymdefdata       d   = NULL;
+    ProDtlsymdefattach    *arr = NULL;
+    ProDtlsymdefattachType ret = PROSYMDEFATTACHTYPE_FREE;
+    int   i, n = 0;
+
+    /* 字段含义见 ProDtlsymdefattachGet() 文档：
+       type=FREE 等用 location；type=ON_ITEM/NORM_ITEM 用 entity_id。 */
+    if (ProDtlsymdefDataGet(&g_symdef, &d) != PRO_TK_NO_ERROR || d == NULL)
+    {
+        HLog("SymdefAttach: DataGet failed, fallback FREE\n");
+        return ret;
+    }
+    if (ProDtlsymdefdataAttachGet(d, &arr) != PRO_TK_NO_ERROR || arr == NULL)
+    {
+        HLog("SymdefAttach: none / AttachGet failed, fallback FREE\n");
+        ProDtlsymdefdataFree(d);
+        return ret;
+    }
+
+    ProArraySizeGet((ProArray)arr, &n);
+    HLog("SymdefAttach: count=%d\n", n);
+    for (i = 0; i < n; i++)
+    {
+        ProDtlsymdefattachType t   = PROSYMDEFATTACHTYPE_FREE;
+        int                    eid = 0;
+        double                 par = 0.0;
+        ProVector              loc;
+        loc[0] = loc[1] = loc[2] = 0.0;
+        if (ProDtlsymdefattachGet(arr[i], &t, &eid, &par, loc)
+                == PRO_TK_NO_ERROR)
+        {
+            HLog("  [%d] type=%d entity_id=%d param=%.4f "
+                 "loc=(%.4f, %.4f, %.4f)\n",
+                 i, (int)t, eid, par, loc[0], loc[1], loc[2]);
+            if (i == 0)
+                ret = t;
+        }
+    }
+    ProArrayFree((ProArray*)&arr);
+    ProDtlsymdefdataFree(d);
+
+    HLog("SymdefAttach: use symbol's own attach point, type=%d "
+         "(NOT overridden)\n", (int)ret);
+    return ret;
+}
+
 /* 在 point 处创建一个编号为 number 的球标（「添加」与「插入」共用） */
 static ProError HCreateBalloon(ProMdl drawing, ProView over_view,
                                ProVector point, int number)
@@ -548,7 +621,11 @@ static ProError HCreateBalloon(ProMdl drawing, ProView over_view,
     if (ProDtlsyminstdataAlloc(drawing, &data) != PRO_TK_NO_ERROR)
         return PRO_TK_GENERAL_ERROR;
     ProDtlsyminstdataDefSet(data, &g_symdef);
-    ProDtlsyminstdataAttachtypeSet(data, PROSYMDEFATTACHTYPE_FREE);
+
+    /* ★ 附着【类型】取符号文件自带的（官方 TestDtlsyminst.c 的做法）；
+          放置位置仍由下面的 ProDtlattachAlloc() 用鼠标点决定。
+          绝不调用 ProDtlsyminstdataDefattachSet() 去覆盖附着点。 */
+    ProDtlsyminstdataAttachtypeSet(data, HDumpSymdefAttach());
     ProDtlsyminstdataDisplayedSet(data, PRO_B_TRUE);
 
     if (HSetVarTexts(drawing, data, number) != PRO_TK_NO_ERROR)
@@ -577,6 +654,93 @@ static ProError HCreateBalloon(ProMdl drawing, ProView over_view,
 }
 
 /*---------------------------------------------------------------------*\
+  通用：拾取「放置点」（添加球标 / 插入球标共用）
+
+  ★ 2026-10-09 定稿：换回 Creo 原生拾取 ★
+
+  前几版的做法是自己画一个「跟着鼠标走的预览圈」：用 ProMouseTrack 死循环
+  采样鼠标位置，再用异或（complement）绘图模式画圆 + 编号。手感是好，但
+  代价是**必然的**，不是实现得不好：
+
+    动作函数（用户点按钮后 Creo 调用的那段代码）跑在 Creo 的界面线程上。
+    要让圆跟着鼠标走，就得 for(;;) 一直不返回 —— 界面线程被占住，Creo
+    自己的消息循环就停摆了。于是滚轮缩放、点别的功能区按钮、点标题栏关闭
+    全都没反应：消息只会堆在队列里，没人取走。这不是「优先级高」，是死
+    循环方案的固有代价。
+
+  而 TOOLKIT 并不提供「原生预览」。翻遍官方示例（包括 pt_examples\
+  pt_graphics\TestDtlsyminst.c 里 PTC 自己造符号实例的流程）：标准做法就是
+  ProMousePickGet 拾一个点、再 ProDtlsyminstCreate 创建，没有别的花样。
+  所以这是一道选择题：
+
+        「跟随鼠标的预览圈」  与  「原生手感」  不可兼得。
+
+  用户要的是后者 —— 跟 Creo 自带符号功能一致：能滚轮缩放、点别的功能就
+  切走、关窗口正常。所以这里换回原生拾取 ProMousePickGet：
+
+    · 它是 Creo 自己的拾取会话，界面消息循环照常运转
+      → 滚轮缩放、中键平移都正常；
+    · ProGraphic.h:598 官方原话「You must check the return value to make
+      sure the user did not select a command.」→ 用户在拾取期间点了别的
+      功能区按钮，本函数会带回错误码，我们立刻退出，让那个功能正常启动
+      （这就是「点别的功能就切走」）；
+    · Esc / 中键 / 右键 由 Creo 原生中断，同样带回非 0 返回码。
+
+  交互：左键       -> 确认，point 有效，返回 PRO_TK_NO_ERROR
+        中键/右键  -> 取消，返回 PRO_TK_ABORT
+        Esc        -> 取消，返回 PRO_TK_ABORT
+        点别的功能 -> 取消（Creo 带回错误码）
+
+  preview_number 参数保留但不再使用（原生拾取没有自定义预览），
+  只为调用处改动最小、将来想加回预览时留个位置。
+\*---------------------------------------------------------------------*/
+static ProError HPickPlacePoint(int preview_number, ProVector point)
+{
+    ProError       status;
+    ProMouseButton btn;
+
+    (void)preview_number;
+
+    btn      = PRO_NO_BUTTON;
+    point[0] = point[1] = point[2] = 0.0;
+
+    /* expected_button 传 PRO_ANY_BUTTON：左键放置、中键/右键结束都要能
+       收回来，只有拿到实际按下的键才能区分（ProGraphic.h:601）。 */
+    status = ProMousePickGet(PRO_ANY_BUTTON, &btn, point);
+    ProMessageClear();
+
+    HLog("HPickPlacePoint: ProMousePickGet status=%d btn=%d point=(%.1f,%.1f)\n",
+         (int)status, (int)btn, point[0], point[1]);
+
+    if (status != PRO_TK_NO_ERROR)
+    {
+        /* 用户点了别的命令 / 按了 Esc —— Creo 已把控制权收走，直接让位 */
+        HLog("HPickPlacePoint: cancelled (other command or abort)\n");
+        return PRO_TK_ABORT;
+    }
+    if (btn != PRO_LEFT_BUTTON)
+    {
+        HLog("HPickPlacePoint: btn=%d -> cancel\n", (int)btn);
+        return PRO_TK_ABORT;
+    }
+    return PRO_TK_NO_ERROR;
+}
+
+/* 扫描现有球标，返回下一个可用编号（最大值 +1，每轮重扫，保证始终连号） */
+static int HNextNumber(ProMdl drawing)
+{
+    HScan scan;
+    int   n;
+
+    scan.count = 0; scan.numbers = NULL; scan.max = 0;
+    ProDrawingDtlsyminstVisit((ProDrawing)drawing, PRO_VALUE_UNUSED,
+                              HScanAction, NULL, (ProAppData)&scan);
+    n = scan.max + 1;
+    HScanFree(&scan);
+    return n;
+}
+
+/*---------------------------------------------------------------------*\
   命令1：添加一个球标（追加在末尾）
 \*---------------------------------------------------------------------*/
 static uiCmdAccessState HAddAccess(uiCmdAccessMode access_mode)
@@ -586,15 +750,13 @@ static uiCmdAccessState HAddAccess(uiCmdAccessMode access_mode)
 
 static int HAddAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
 {
-    ProError     status;
-    ProMdl       drawing;
-    ProVector    point;
-    HScan        scan;
-    int          new_number;
-    int          sheet;
-    ProView      over_view;
-    ProMouseButton btn;
-    int          placed;
+    ProError       status;
+    ProMdl         drawing;
+    ProVector      point;
+    int            new_number;
+    int            sheet;
+    ProView        over_view;
+    int            placed;
 
     status = HGetDrawing(&drawing);
     if (status != PRO_TK_NO_ERROR)
@@ -612,54 +774,42 @@ static int HAddAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command
         }
     }
 
-    /* 交互选放置点：ProMousePickGet 直接取鼠标点击位置，不改变 Creo 的
-       选择过滤器，可在图纸任意位置（含空白处）点选。
+    /* ★★ 连续放置（原生拾取）★★
 
-       ★ 连续放置：整个命令期间就留在这个循环里，每按一次左键放一个球标，
-       不用再回去点功能区按钮。
+       交互：
+         左键       -> 放下一个球标（编号自动 = 现有最大号 + 1），继续等下一个点
+         中键/右键  -> 结束
+         Esc        -> 结束
+         点别的功能 -> 结束，并让那个功能正常启动
 
-       为什么 expected_button 传 PRO_ANY_BUTTON 而不是 PRO_LEFT_BUTTON：
-       官方头文件 ProGraphic.h 写明，传 PRO_ANY_BUTTON 时用户可用任意键
-       拾取，并且 button_pressed 会回传实际按下的键（左键 1 / 右键 2 /
-       中键 4）。只有拿到这个回传值，才能区分「继续放」和「结束」；
-       若传 PRO_LEFT_BUTTON，中键、右键根本不会让函数返回，就没法收尾。
+       为什么这样就够了：拾取用的是 Creo 原生的 ProMousePickGet，它自己的
+       拾取会话里滚轮缩放、命令切换都是活的（详见 HPickPlacePoint 的说明）。
+       本函数只负责「放一个、再要下一个点」，连续放不用回去点功能区按钮。
 
-       退出条件（三条都有官方依据）：
-         1) 左键         -> 放一个，继续循环
-         2) 中键 / 右键  -> 正常结束（与 Creo「中键=完成」的习惯一致）
-         3) 返回码非 0   -> 用户点了别的命令或按 Esc 取消。ProGraphic.h 原话：
-            "You must check the return value to make sure the user did not
-             select a command." —— 这正是安全退出的依据。
-       另外 HCreateBalloon 出错也立刻跳出，不留半截状态。 */
+       退出条件：HPickPlacePoint 返回非 0（中键 / 右键 / Esc / 点了别的功能 /
+       出错）或 HCreateBalloon 出错，都立刻收尾，不留半截状态。 */
     ProDrawingCurrentSheetGet((ProDrawing)drawing, &sheet);
     ProDrawingBackgroundViewGet((ProDrawing)drawing, sheet, &over_view);
 
     placed = 0;
+
     for (;;)
     {
         HMsg(placed == 0 ? "BALLOON_PICK" : "BALLOON_PICK_MORE");
-        ProWindowRepaint(PRO_VALUE_UNUSED);   /* 先刷出提示，用户才知道要点 */
+        ProWindowRepaint(PRO_VALUE_UNUSED);   /* 先刷出提示，用户才知道怎么操作 */
 
-        btn = PRO_NO_BUTTON;
-        point[0] = point[1] = point[2] = 0.0;
-        status = ProMousePickGet(PRO_ANY_BUTTON, &btn, point);
-        ProMessageClear();
+        /* 原生拾取选点：左键确认返回 0；中键 / 右键 / Esc / 点了别的功能 /
+           出错一律返回非 0，这时直接收尾离开 */
+        if (HPickPlacePoint(0, point) != PRO_TK_NO_ERROR)
+        {
+            HLog("HAddAct: placement ended, placed=%d\n", placed);
+            break;
+        }
 
-        HLog("HAddAct: MousePick status=%d btn=%d point=(%.1f,%.1f) placed=%d\n",
-             (int)status, (int)btn, point[0], point[1], placed);
-
-        if (status != PRO_TK_NO_ERROR)
-            break;                      /* 用户点了别的命令 / 取消 */
-        if (btn != PRO_LEFT_BUTTON)
-            break;                      /* 中键或右键：结束连续放置 */
-
-        /* 扫描现有编号，取最大值 +1 —— 每轮都重新扫，所以编号始终连号 */
-        scan.count = 0; scan.numbers = NULL; scan.max = 0;
-        ProDrawingDtlsyminstVisit((ProDrawing)drawing, PRO_VALUE_UNUSED,
-                                  HScanAction, NULL, (ProAppData)&scan);
-        new_number = scan.max + 1;
-        HScanFree(&scan);
-        HLog("HAddAct: new_number=%d\n", new_number);
+        /* 落点确认后重新取号（每轮重扫，编号始终连号） */
+        new_number = HNextNumber(drawing);
+        HLog("HAddAct: place (%.1f,%.1f) number=%d placed=%d\n",
+             point[0], point[1], new_number, placed);
 
         if (HCreateBalloon(drawing, over_view, point, new_number) != PRO_TK_NO_ERROR)
         {
@@ -673,10 +823,11 @@ static int HAddAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command
     }
 
     HLog("HAddAct: finished, placed=%d\n", placed);
-    if (placed > 1)
-        HMsg("BALLOON_ADD_MULTI_OK");   /* 连续放了多个，收尾给个明确反馈 */
+    if (placed > 0)
+        HMsg("BALLOON_ADD_MULTI_OK");   /* 收尾给个明确反馈 */
     return 0;
 }
+
 
 /*---------------------------------------------------------------------*\
   命令2：插入一个球标（序号顺延）
@@ -696,7 +847,6 @@ static int HInsertAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
     ProMdl         drawing;
     ProVector      point;
     ProView        over_view;
-    ProMouseButton btn;
     ProSelection  *sel = NULL;
     int            n_sels = 0, sheet, insert_num;
     ProDtlsyminst  ref_inst;
@@ -716,17 +866,20 @@ static int HInsertAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
     ProDrawingCurrentSheetGet((ProDrawing)drawing, &sheet);
     ProDrawingBackgroundViewGet((ProDrawing)drawing, sheet, &over_view);
 
-    /* ① 放置位置 */
+    /* ① 放置位置：和「添加球标」一样，用 Creo 原生拾取。
+       中键 / 右键 / Esc / 点了别的功能 都能取消。 */
     HMsg("BALLOON_INSERT_PICK");
     ProWindowRepaint(PRO_VALUE_UNUSED);
-    btn = PRO_NO_BUTTON;
-    point[0] = point[1] = point[2] = 0.0;
-    status = ProMousePickGet(PRO_LEFT_BUTTON, &btn, point);
-    ProMessageClear();
-    if (status != PRO_TK_NO_ERROR || btn != PRO_LEFT_BUTTON)
+    if (HPickPlacePoint(-1, point) != PRO_TK_NO_ERROR)
+    {
+        HLog("HInsertAct: placement cancelled by user\n");
         return 0;
+    }
+    HLog("HInsertAct: placement at (%.1f,%.1f)\n", point[0], point[1]);
 
-    /* ② 参照球标（新球标插在它前面） */
+    /* ② 参照球标（新球标插在它前面）
+       ProSelect() 走的是 Creo 自己的交互机制，Esc / 中键取消由它内部处理，
+       不需要我们额外做取消通道。 */
     HMsg("BALLOON_INSERT_REF");
     ProWindowRepaint(PRO_VALUE_UNUSED);
     sel    = NULL;
