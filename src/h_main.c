@@ -105,8 +105,9 @@
 /*---------------------------------------------------------------------*\
   全局
 \*---------------------------------------------------------------------*/
-static ProDtlsymdef g_symdef;                       /* 符号定义（一次加载，全程复用） */
+static ProDtlsymdef g_symdef;                       /* 符号定义（绑定到某张绘图） */
 static ProBoolean  g_symdef_valid = PRO_B_FALSE;
+static ProMdl      g_symdef_owner = NULL;           /* g_symdef 属于哪张绘图；换图必须重载 */
 static ProFileName g_msg_file;                      /* 宽字符串形式的 h_msg.txt */
 static char        g_plugin_dir[PRO_PATH_SIZE] = "";/* DLL 所在目录 */
 static char        g_symbols_dir[PRO_PATH_SIZE] = "";/* <DLL目录>\symbols */
@@ -208,7 +209,10 @@ static ProError HSetVarTexts(ProMdl drawing, ProDtlsyminstdata data, int number)
     err = ProDrawingDtlnotesCollect((ProDrawing)drawing, &g_symdef,
                                     PRO_VALUE_UNUSED, &p_notes);
     if (err != PRO_TK_NO_ERROR && err != PRO_TK_E_NOT_FOUND)
+    {
+        HLog("HSetVarTexts: notesCollect -> %d FAILED\n", (int)err);
         return err;
+    }
 
     err = ProArrayAlloc(0, sizeof(ProDtlvartext), 1, (ProArray*)&p_var_texts);
     if (err != PRO_TK_NO_ERROR)
@@ -281,6 +285,12 @@ static ProError HSetVarTexts(ProMdl drawing, ProDtlsyminstdata data, int number)
     {
         ProArrayFree((ProArray*)&p_var_texts);
     }
+
+    /* 这行是「换图纸后创建失败」的关键指标：
+       vts=0 表示一个可变文本占位符都没读到 -> 编号根本设不进去，
+       接下来 ProDtlsyminstCreate 多半要失败。正常情况下 123.sym
+       带一个 \xxx\ 占位符，这里应当是 vts=1。 */
+    HLog("HSetVarTexts: notes=%d vts=%d number=%d\n", n_notes, n_vts, number);
     return PRO_TK_NO_ERROR;
 }
 
@@ -329,6 +339,56 @@ static ProError HLoadSymbol(ProMdl drawing)
     sprintf(symfile, "%s\\%s.sym", g_symbols_dir, SYMNAME);
     HLog("HLoadSymbol: %s -> %s\n", symfile,
          HFileExists(symfile) ? "EXISTS" : "MISSING!");
+
+    /* 日志带上绘图名 —— 「换图之后才失败」这类问题靠它一眼看穿 */
+    {
+        ProName dn;
+        char    cd[PRO_NAME_SIZE];
+        if (ProMdlNameGet(drawing, dn) == PRO_TK_NO_ERROR)
+        {
+            ProWstringToString(cd, dn);
+            HLog("HLoadSymbol: drawing=%s\n", cd);
+        }
+    }
+
+    /* ⓪ 当前绘图里已经加载过同名符号？直接复用它的句柄。
+          ★ 必须放在 Retrieve 之前（2026-10-14 实测补上）：
+          ProDrawingDtlsymdefRetrieve 对「已存在」的符号返回
+          PRO_TK_E_FOUND(-5)，官方文档原话 "The specified symbol exist
+          but was not retrieved" —— 输出参数此时不保证被填充，拿到的
+          句柄不可用。而「换图纸后重新加载」正好次次命中这种情况，
+          所以不能只靠 Retrieve，要先在绘图里查一遍。 */
+    {
+        ProDtlsymdef *defs = NULL;
+        if (ProDrawingDtlsymdefsCollect((ProDrawing)drawing, &defs)
+                == PRO_TK_NO_ERROR && defs != NULL)
+        {
+            int n_defs = 0, id;
+            ProArraySizeGet((ProArray)defs, &n_defs);
+            for (id = 0; id < n_defs; id++)
+            {
+                ProDtlsymdefdata dd = NULL;
+                ProName          dname;
+                char             cname[PRO_NAME_SIZE];
+                if (ProDtlsymdefDataGet(&defs[id], &dd) != PRO_TK_NO_ERROR
+                        || dd == NULL)
+                    continue;
+                if (ProDtlsymdefdataNameGet(dd, dname) != PRO_TK_NO_ERROR)
+                    continue;
+                ProWstringToString(cname, dname);
+                if (_stricmp(cname, SYMNAME) == 0)
+                {
+                    g_symdef       = defs[id];
+                    g_symdef_valid = PRO_B_TRUE;
+                    ProArrayFree((ProArray*)&defs);
+                    HLog("HLoadSymbol: [0] already loaded in this drawing "
+                         "(\"%s\") -> OK\n", cname);
+                    return PRO_TK_NO_ERROR;
+                }
+            }
+            ProArrayFree((ProArray*)&defs);
+        }
+    }
 
     /* ① 相对 pro_symbol_dir 检索（官方示例 TestSymDefMenu.c 用的就是 "."） */
     status = ProDrawingDtlsymdefRetrieve(drawing, wp, wname,
@@ -617,9 +677,13 @@ static ProError HCreateBalloon(ProMdl drawing, ProView over_view,
     ProDtlsyminstdata data = NULL;
     ProDtlattach      attach = NULL;
     ProDtlsyminst     syminst;
+    ProError          sub;
 
     if (ProDtlsyminstdataAlloc(drawing, &data) != PRO_TK_NO_ERROR)
+    {
+        HLog("HCreateBalloon: [1] dataAlloc FAILED\n");
         return PRO_TK_GENERAL_ERROR;
+    }
     ProDtlsyminstdataDefSet(data, &g_symdef);
 
     /* ★ 附着【类型】取符号文件自带的（官方 TestDtlsyminst.c 的做法）；
@@ -628,22 +692,32 @@ static ProError HCreateBalloon(ProMdl drawing, ProView over_view,
     ProDtlsyminstdataAttachtypeSet(data, HDumpSymdefAttach());
     ProDtlsyminstdataDisplayedSet(data, PRO_B_TRUE);
 
-    if (HSetVarTexts(drawing, data, number) != PRO_TK_NO_ERROR)
+    /* 每一步单独记错误码：失败时日志能直接指出是哪一环，
+       不用再靠猜（之前这里静默返回，排查全靠反推）。 */
+    sub = HSetVarTexts(drawing, data, number);
+    if (sub != PRO_TK_NO_ERROR)
     {
+        HLog("HCreateBalloon: [2] SetVarTexts -> %d FAILED\n", (int)sub);
         ProDtlsyminstdataFree(data);
         return PRO_TK_GENERAL_ERROR;
     }
-    if (ProDtlattachAlloc(PRO_DTLATTACHTYPE_FREE, over_view, point, NULL, &attach)
-            != PRO_TK_NO_ERROR)
+
+    sub = ProDtlattachAlloc(PRO_DTLATTACHTYPE_FREE, over_view, point, NULL, &attach);
+    if (sub != PRO_TK_NO_ERROR)
     {
+        HLog("HCreateBalloon: [3] attachAlloc -> %d FAILED "
+             "(view=%p pt=%.1f,%.1f)\n",
+             (int)sub, (void*)over_view, point[0], point[1]);
         ProDtlsyminstdataFree(data);
         return PRO_TK_GENERAL_ERROR;
     }
     ProDtlsyminstdataAttachmentSet(data, attach);
     ProDtlattachFree(attach);           /* attach 已被复制，立即释放 */
 
-    if (ProDtlsyminstCreate(drawing, data, &syminst) != PRO_TK_NO_ERROR)
+    sub = ProDtlsyminstCreate(drawing, data, &syminst);
+    if (sub != PRO_TK_NO_ERROR)
     {
+        HLog("HCreateBalloon: [4] syminstCreate -> %d FAILED\n", (int)sub);
         ProDtlsyminstdataFree(data);
         return PRO_TK_GENERAL_ERROR;
     }
@@ -765,13 +839,21 @@ static int HAddAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command
         return 0;
     }
 
-    if (!g_symdef_valid)
+    /* ★ 符号定义是「绘图级」句柄（ProDrawingDtlsymdefRetrieve 的第一个
+       参数就是绘图）。只在启动时加载一次、之后跨图复用是错的 ——
+       2026-10-14 实测：在某张图上加载后，切到另一张图（例如新建工程图）
+       继续用旧句柄，ProDrawingDtlnotesCollect 取不到可变文本占位符，
+       vartexts 一个字都设不进去，ProDtlsyminstCreate 随即失败，
+       界面上就是「操作失败，请检查后重试」。所以只要绘图变了就重载。 */
+    if (!g_symdef_valid || g_symdef_owner != drawing)
     {
         if (HLoadSymbol(drawing) != PRO_TK_NO_ERROR)
         {
             HMsg("BALLOON_NO_SYMBOL");
             return 0;
         }
+        g_symdef_owner = drawing;
+        HLog("HAddAct: symbol (re)loaded for this drawing\n");
     }
 
     /* ★★ 连续放置（原生拾取）★★
@@ -857,10 +939,16 @@ static int HInsertAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
         HMsg("BALLOON_NO_DRAWING");
         return 0;
     }
-    if (!g_symdef_valid && HLoadSymbol(drawing) != PRO_TK_NO_ERROR)
+    /* 同 HAddAct：换图纸（新建工程图等）后旧句柄失效，必须按绘图重载 */
+    if (!g_symdef_valid || g_symdef_owner != drawing)
     {
-        HMsg("BALLOON_NO_SYMBOL");
-        return 0;
+        if (HLoadSymbol(drawing) != PRO_TK_NO_ERROR)
+        {
+            HMsg("BALLOON_NO_SYMBOL");
+            return 0;
+        }
+        g_symdef_owner = drawing;
+        HLog("HInsertAct: symbol (re)loaded for this drawing\n");
     }
 
     ProDrawingCurrentSheetGet((ProDrawing)drawing, &sheet);
