@@ -65,7 +65,7 @@ Balloon
 Balloon
 #
 EXPORT_ASK_NAME
-Type a name for the exported files (STP / PDF / DWG), then press Enter; Esc cancels.
+Type a name for the exported files (STP / PDF / DWG). You may also type a full path to choose the folder. Esc cancels.
 #
 EXPORT_OK
 Done: STP / PDF / DWG have been created in the current working directory.
@@ -83,7 +83,7 @@ EXPORT_FAILED
 Export failed, please retry.
 #
 H_ExportFiles
-Export STP/PDF/DWG
+Export Drawing
 #
 H_ExportFiles.Help
 One click to export: the drawing's 3D model as STEP, the drawing itself as PDF and DWG, all renamed to the name you type.

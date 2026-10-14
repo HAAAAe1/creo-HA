@@ -87,8 +87,8 @@ Balloon
 球标
 #
 EXPORT_ASK_NAME
-Type a name for the exported files (STP / PDF / DWG), then press Enter; Esc cancels.
-请输入导出文件的名称（将用于 STP / PDF / DWG 三个文件），按回车确认，Esc 取消。
+Type a name for the exported files (STP / PDF / DWG). You may also type a full path to choose the folder. Esc cancels.
+请输入导出文件的名称（将用于 STP / PDF / DWG 三个文件），也可以直接输入完整路径指定存放位置；按回车确认，Esc 取消。
 #
 EXPORT_OK
 Done: STP / PDF / DWG have been created in the current working directory.
@@ -111,10 +111,10 @@ Export failed, please retry.
 导出失败，请检查后重试。
 #
 H_ExportFiles
-Export STP/PDF/DWG
-一键导出
+Export Drawing
+一键导出图纸
 #
 H_ExportFiles.Help
 One click to export: the drawing's 3D model as STEP, the drawing itself as PDF and DWG, all renamed to the name you type (files go to the current working directory).
-一键导出：把工程图关联的 3D 模型导出为 STEP，把工程图本身导出为 PDF 和 DWG，三个文件统一用你输入的名字命名（生成在 Creo 当前工作目录）。
+一键导出图纸：把工程图关联的 3D 模型导出为 STEP，把工程图本身导出为 PDF 和 DWG，三个文件统一用你输入的名字命名（生成在 Creo 当前工作目录）。
 #

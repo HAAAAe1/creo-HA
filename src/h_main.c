@@ -1211,23 +1211,45 @@ static int HDeleteAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
 
 /*---------------------------------------------------------------------*\
   命令5：一键导出 —— 把当前工程图关联的 3D 模型导成 STEP、
-          工程图本身导成 PDF 和 DWG，三个文件统一用用户输入的名字。
+          工程图本身导成 PDF 和 DWG，三个文件统一用用户选定的名字，
+          存放位置也由用户在 Creo 原生的"另存为"浏览器里选。
+
+  【为什么全程用宽字符 + Win32 的 W 版 API】
+    · 实测：Creo 的 DWG 导出器吃不下中文文件名。所以插件**从不把中文名
+      交给 Creo** —— 先用固定 ASCII 临时名导到工作目录，再用 MoveFileExW
+      搬到用户选的位置并改成用户要的名字。
+    · 同理 GetFileAttributesA / MoveFileA 这类窄字符 API 在中文路径下会把
+      编码搞错，一律改用 GetFileAttributesW / MoveFileExW，和
+      ProPath / ProMdlFileName（都是 wchar_t）天然对齐。
+    · ProStringToWstring / ProWstringToString（ProUtil.h:468/495）官方注明
+      "accepts only strings in the active encoding of the TOOLKIT
+      application"、"does not change the encoding" —— 编码语义**依赖运行时
+      环境**，不能拿它当 UTF-8 转换器使。所以窄字符只留给日志。
 
   接口依据（全部在 D:\Creo6Toolkit 头文件里查证过，2026-10-14）：
+    · ProFileMdlnameSave(dialog_label, filter_string, shortcut_path_arr,
+                         shortcut_name_arr, default_path, pre_sel_file_name,
+                         r_selected_file)                   —— ProUtil.h:1666
+        "Prompts the standard file browser interface of Creo Parametric"
+        —— 就是「文件 > 另存为」那个浏览器：能选目录、能输文件名，
+        返回的 r_selected_file 是完整路径（ProPath）；
+        PRO_TK_USER_ABORT = 用户取消。（DEPRECATED 的 ProFileSave 是前身。）
     · ProOutputFileMdlnameWrite(ProMdl, ProMdlFileName, ProImportExportFile,
-                                arg1..arg4)                  —— ProUtil.h:1114
+                                arg1..arg4)                 —— ProUtil.h:1114
         第一个参数是 ProMdl（**不是** ProSolid），所以【工程图可以直接传】；
         PRO_STEP_FILE = 22、PRO_DWG_FILE = 34（ProUtil.h:106 / 119）。
+        name 参数**要带扩展名**（doc:1140 —— 只有 IGES/DXF 才不写、自动加）；
+        只给文件名时文件落在 Creo 当前工作目录。
         官方用法两处：
           PTWCServerUpdateDXF.c:45  对 DXF —— 后四个参数全 NULL；
-          TestInterface.c:410       对 STEP —— arg2 传 int*（导出数量）。
-        name 只给文件名（不含路径），文件落在 Creo 当前工作目录。
+          TestInterface.c:410       对 STEP —— arg2 保持 NULL。
+        本插件先按头文件:1193（arg2 = int* 指向"数量"）传 &1，
+        没落地再按官方示例传 NULL 重试。
     · ProPDFExport(ProMdl, ProPath, ProPDFOptions)            —— ProPDF.h:242
         output_file 要求**完整路径**（含扩展名）；
         model 必须已加载且显示在窗口里 —— 我们的工程图正好满足。
-        返回码含 PRO_TK_NO_LICENSE / PRO_TK_NOT_DISPLAYED 等，逐一给提示。
     · ProDrawingSolidsCollect(ProDrawing, ProSolid**)         —— ProDrawing.h:1571
-        取工程图里"用户显式添加过"的模型，也就是图纸关联的那张 3D 图。
+        取工程图里"用户显式添加过"的模型；程序集只返回根程序集。
     · ProMessageStringRead(int max, wchar_t *buffer)          —— ProMessage.h:291
         读一行键盘输入；**必须先 ProMessageDisplay 提示**；
         用户按 Esc -> PRO_TK_MSG_USER_QUIT，直接回车 -> PRO_TK_GENERAL_ERROR。
@@ -1237,57 +1259,216 @@ static uiCmdAccessState HExportAccess(uiCmdAccessMode access_mode)
     return ACCESS_AVAILABLE;
 }
 
-/* 导出后校正文件名：Creo 有时会自己再补一次扩展名（xxx.stp.stp），
-   有时又完全不补。统一收敛到 <base><ext>。返回 1 = 目标文件已就位。 */
-static int HEnsureExported(const char *dir, const char *base, const char *ext)
+/* 拼 <dir>\<base><ext>。成功返回 0，放不下返回 -1。
+   dir 已经以分隔符结尾时不再补一个 —— ProDirectoryCurrentGet 返回的工作
+   目录就带尾部反斜杠，直接拼会得到 "…\CREO12\\H_export_tmp.stp"（Windows
+   虽然容错，但日志脏、个别 API 也挑剔）。 */
+static int HPathJoinW(wchar_t *out, int cap, const wchar_t *dir,
+                      const wchar_t *base, const wchar_t *ext)
 {
-    /* 缓冲区按「UTF-8 最坏 4 字节/宽字符」给足：
-       ProWstringToString 把宽字符转成 UTF-8 时，字节数最多是宽字符数的 4 倍，
-       而一个名字里可能有中文 —— 用 PRO_PATH_SIZE 装会溢出。 */
-    char want[PRO_PATH_SIZE * 4], alt[PRO_PATH_SIZE * 4];
+    size_t dl  = wcslen(dir);
+    int    sep = (dl > 0 && (dir[dl - 1] == L'\\' || dir[dl - 1] == L'/'))
+                     ? 0 : 1;
 
-    if (strlen(dir) + strlen(base) + strlen(ext) + 4 > sizeof(want))
+    if ((int)(dl + (size_t)sep + wcslen(base) + wcslen(ext) + 1) > cap)
+        return -1;
+
+    if (sep)
+        swprintf(out, (size_t)cap, L"%ls\\%ls%ls", dir, base, ext);
+    else
+        swprintf(out, (size_t)cap, L"%ls%ls%ls", dir, base, ext);
+    return 0;
+}
+
+/* 宽字符版存在性检查（窄字符 API 在中文路径下不可靠） */
+static int HFileExistsW(const wchar_t *path)
+{
+    DWORD attr = GetFileAttributesW(path);
+
+    return (attr != INVALID_FILE_ATTRIBUTES &&
+            !(attr & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
+}
+
+/* 宽 -> 窄，只用于写日志（h_load.log 是窄字符文件）。
+   用 Creo 自己的转换函数跟随运行时编码，比 printf("%ls") 靠谱。 */
+static void HLogW(const char *tag, const wchar_t *w)
+{
+    char buf[PRO_PATH_SIZE * 4];
+
+    if (w == NULL)
     {
-        HLog("HExport: path too long, skip existence check\n");
+        HLog("%s(null)\n", tag);
+        return;
+    }
+    ProWstringToString(buf, (wchar_t *)w);
+    HLog("%s%s\n", tag, buf);
+}
+
+/* 把 path 拆成「目录」+「叶子名（已去扩展名、已清非法字符）」。
+   fallback_dir 供"只有文件名、没有目录"的情况使用。
+   返回 0 成功，-1 失败（空名 / 放不下）。 */
+static int HSplitPathW(const wchar_t *path, const wchar_t *fallback_dir,
+                       wchar_t *dir, int dir_cap, wchar_t *leaf, int leaf_cap)
+{
+    const wchar_t *s, *last = NULL, *name, *dot = NULL;
+    size_t         n;
+    int            k;
+
+    if (path == NULL || path[0] == L'\0')
+        return -1;
+
+    for (s = path; *s != L'\0'; s++)
+        if (*s == L'\\' || *s == L'/')
+            last = s;
+
+    if (last != NULL)
+    {
+        n = (size_t)(last - path);
+        if (n == 0 || n >= (size_t)dir_cap)
+            return -1;
+        wmemcpy(dir, path, n);
+        dir[n] = L'\0';
+        name = last + 1;
+    }
+    else
+    {
+        if (wcslen(fallback_dir) >= (size_t)dir_cap)
+            return -1;
+        wcscpy(dir, fallback_dir);
+        name = path;
+    }
+
+    if (name[0] == L'\0' || wcslen(name) >= (size_t)leaf_cap)
+        return -1;
+
+    for (s = name; *s != L'\0'; s++)
+        if (*s == L'.')
+            dot = s;            /* 取最后一个点：用户多打的扩展名一律去掉 */
+    n = (dot != NULL && dot != name) ? (size_t)(dot - name) : wcslen(name);
+    wmemcpy(leaf, name, n);
+    leaf[n] = L'\0';
+
+    for (k = 0; leaf[k] != L'\0'; k++)
+        if (leaf[k] == L'\\' || leaf[k] == L'/' || leaf[k] == L':' ||
+            leaf[k] == L'*'  || leaf[k] == L'?' || leaf[k] == L'"' ||
+            leaf[k] == L'<'  || leaf[k] == L'>' || leaf[k] == L'|')
+            leaf[k] = L'_';
+
+    return (leaf[0] == L'\0') ? -1 : 0;
+}
+
+/* 把刚导出的临时文件搬到用户要的位置并改成目标名，同时删掉源文件。
+   Creo 有时写成 <tmp><ext><ext>、有时完全不补扩展名 —— 三种都试。
+   返回 1 = 目标文件已就位。
+
+   ★★ 跨盘是必须支持的（2026-10-14 用户实测踩到）★★
+     临时文件一定在 Creo 工作目录（比如 D:\…\CREO12\），而用户完全可能把
+     导出位置选到另一个盘（比如 C:\Users\H\Desktop）。MoveFileExW 在不带
+     MOVEFILE_COPY_ALLOWED 时底层就是 rename 语义，跨卷会直接失败并返回
+     ERROR_NOT_SAME_DEVICE(17) —— 日志里那串 "MoveFileExW failed (err=17)"
+     就是这个。第一次导出到工作目录所在的 D 盘所以成功，第二次选桌面
+     （C 盘）就三个文件全灭，看起来像"第一次能、第二次不能"的怪现象。
+     修法两层：
+       ① 带上 MOVEFILE_COPY_ALLOWED（官方语义：跨卷时自动退化成
+          CopyFile + DeleteFile）；
+       ② 万一某环境仍不认，自己再来一遍 CopyFileW + DeleteFileW。 */
+static int HMoveExported(const wchar_t *src_dir, const wchar_t *tmp_base,
+                         const wchar_t *dst_dir, const wchar_t *dst_base,
+                         const wchar_t *ext)
+{
+    wchar_t src[PRO_PATH_SIZE * 2], dst[PRO_PATH_SIZE * 2];
+    wchar_t ext2[PRO_MDLEXTENSION_SIZE * 2];
+    int     i;
+
+    if (HPathJoinW(dst, (int)(sizeof(dst) / sizeof(dst[0])),
+                   dst_dir, dst_base, ext) != 0)
+    {
+        HLog("HExport: destination path too long, skipped\n");
         return 0;
     }
-    sprintf(want, "%s\\%s%s", dir, base, ext);
-    if (HFileExists(want))
-        return 1;
 
-    sprintf(alt, "%s\\%s%s%s", dir, base, ext, ext);   /* 双扩展名 */
-    if (HFileExists(alt) && MoveFileA(alt, want))
+    /* 注意：这里**不能**因为"目标已存在"就直接返回成功 —— 那个旧文件可能
+       是上一次导出的成果，跟本轮导出成不成功无关，会把失败伪装成成功。
+       目标已存在交给 MOVEFILE_REPLACE_EXISTING / CopyFileW(FALSE) 覆盖。 */
+
+    swprintf(ext2, sizeof(ext2) / sizeof(ext2[0]), L"%ls%ls", ext, ext);
+
+    for (i = 0; i < 3; i++)
     {
-        HLog("HExport: renamed %s -> %s\n", alt, want);
-        return 1;
+        const wchar_t *e = (i == 0) ? ext : ((i == 1) ? ext2 : L"");
+        DWORD          err_move;
+
+        if (HPathJoinW(src, (int)(sizeof(src) / sizeof(src[0])),
+                       src_dir, tmp_base, e) != 0)
+            continue;
+        if (!HFileExistsW(src))
+            continue;
+
+        /* ① 同卷走 rename、跨卷自动退化成复制+删除（靠 COPY_ALLOWED） */
+        if (MoveFileExW(src, dst, MOVEFILE_REPLACE_EXISTING |
+                                    MOVEFILE_COPY_ALLOWED))
+        {
+            HLogW("HExport: moved -> ", dst);
+            return 1;
+        }
+        err_move = GetLastError();
+
+        /* ② 兜底：自己跨卷复制，成功后删源 */
+        if (CopyFileW(src, dst, FALSE))
+        {
+            if (!DeleteFileW(src))
+                HLog("HExport: copied but source left behind (err=%lu)\n",
+                     (unsigned long)GetLastError());
+            HLogW("HExport: copied (cross-volume) -> ", dst);
+            return 1;
+        }
+
+        HLog("HExport: move failed (err=%lu), copy failed (err=%lu)\n",
+             (unsigned long)err_move, (unsigned long)GetLastError());
+        HLogW("  from: ", src);
+        HLogW("  to  : ", dst);
     }
 
-    sprintf(alt, "%s\\%s", dir, base);                 /* 完全没扩展名 */
-    if (HFileExists(alt) && MoveFileA(alt, want))
-    {
-        HLog("HExport: renamed %s -> %s\n", alt, want);
-        return 1;
-    }
-
-    HLog("HExport: MISSING %s\n", want);
+    HLogW("HExport: MISSING source for ", dst);
     return 0;
+}
+
+/* 删掉工作目录里上一轮可能残留的临时文件。
+   同样三种扩展名写法都试 —— 否则 Creo 写成 <tmp>.stp.stp 时会留个旧文件，
+   下一轮 HMoveExported 可能把它当成"刚导出的"搬给用户（内容其实是旧的）。 */
+static void HRemoveTemp(const wchar_t *dir, const wchar_t *base,
+                        const wchar_t *ext)
+{
+    wchar_t path[PRO_PATH_SIZE * 2];
+    wchar_t ext2[PRO_MDLEXTENSION_SIZE * 2];
+    int     i;
+
+    swprintf(ext2, sizeof(ext2) / sizeof(ext2[0]), L"%ls%ls", ext, ext);
+
+    for (i = 0; i < 3; i++)
+    {
+        const wchar_t *e = (i == 0) ? ext : ((i == 1) ? ext2 : L"");
+
+        if (HPathJoinW(path, (int)(sizeof(path) / sizeof(path[0])),
+                       dir, base, e) == 0 && HFileExistsW(path))
+            DeleteFileW(path);
+    }
 }
 
 static int HExportAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
 {
-    ProError       status;
-    ProMdl         drawing;
-    ProSolid      *solids = NULL;
-    ProMdlFileName wname;
-    ProPath        wcwd, wpdf;
-    /* 这三个 char 缓冲同样按 UTF-8 最坏情况（4 字节/宽字符）给足，
-       理由见 HEnsureExported。 */
-    char           dir[PRO_PATH_SIZE * 4];
-    char           base[PRO_PATH_SIZE * 2];
-    char           nm[PRO_PATH_SIZE * 4];
-    int            n_solids = 0, narg = 1;
-    int            step_ok = 0, pdf_ok = 0, dwg_ok = 0, no_license = 0;
-    char          *p;
+    static const wchar_t TMPBASE[] = L"H_export_tmp";   /* 给 Creo 的 ASCII 名 */
+    static const wchar_t *const EXTS[3] = { L".stp", L".dwg", L".pdf" };
+
+    ProError  status;
+    ProMdl    drawing;
+    ProSolid *solids = NULL;
+    ProPath   wcwd, wsel, wpdf;
+    wchar_t   ddir[PRO_PATH_SIZE];              /* 目标目录（用户选的） */
+    wchar_t   dbase[PRO_FILE_MDLNAME_SIZE];     /* 目标文件名（不含扩展名） */
+    int       n_solids = 0, narg = 1;
+    int       step_ok = 0, pdf_ok = 0, dwg_ok = 0, no_license = 0;
+    int       i;
 
     status = HGetDrawing(&drawing);
     if (status != PRO_TK_NO_ERROR)
@@ -1296,57 +1477,70 @@ static int HExportAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
         return 0;
     }
 
-    /* ① 让用户输入文件名（Esc 取消） */
-    HMsg("EXPORT_ASK_NAME");
-    ProWindowRepaint(PRO_VALUE_UNUSED);
-    wname[0] = L'\0';
-    status = ProMessageStringRead(100, wname);
-    ProMessageClear();
-    if (status != PRO_TK_NO_ERROR)
-    {
-        HLog("HExportAct: name input cancelled (status=%d)\n", (int)status);
-        return 0;                       /* Esc 或空回车：安静退出 */
-    }
-
-    ProWstringToString(base, wname);
-    p = strrchr(base, '.');             /* 用户多打了扩展名就去掉 */
-    if (p != NULL && p != base)
-        *p = '\0';
-    for (p = base; *p != '\0'; p++)     /* 文件名里不能出现的字符换成下划线 */
-        if (*p == '\\' || *p == '/' || *p == ':' || *p == '*' || *p == '?' ||
-            *p == '"' || *p == '<' || *p == '>' || *p == '|')
-            *p = '_';
-    if (base[0] == '\0')
-    {
-        HLog("HExportAct: empty name -> abort\n");
-        return 0;
-    }
-    HLog("HExportAct: base=\"%s\"\n", base);
-
-    /* ② 导出目录 = Creo 当前工作目录 */
+    /* ① Creo 当前工作目录 —— 所有导出先落这里，随后再搬到用户选的位置 */
     if (ProDirectoryCurrentGet(wcwd) != PRO_TK_NO_ERROR)
     {
         HLog("HExportAct: cannot get cwd\n");
         HMsg("EXPORT_FAILED");
         return 0;
     }
-    ProWstringToString(dir, wcwd);
-    HLog("HExportAct: cwd=%s\n", dir);
+    HLogW("HExportAct: cwd    = ", wcwd);
 
-    /* 长度闸门：下面既要把 dir+base 拼成完整路径塞进 ProPath（260 宽字符），
-       又要把 base+".stp" 塞进 ProMdlFileName（180+32+4 = 216 宽字符）。
-       ProStringToWstring 是窄 -> 宽 1:1（按 UTF-8 解码后宽字符数只会更少），
-       所以"字节数 < 上限"就能保证不越界。 */
-    if (strlen(base) + 8 >= PRO_MDLNAME_SIZE ||
-        strlen(dir) + strlen(base) + 8 >= PRO_PATH_SIZE)
+    /* ② 让用户选目录 + 输名字：Creo 原生的"另存为"浏览器 */
+    wsel[0] = L'\0';
+    status = ProFileMdlnameSave(L"选择导出位置与文件名",
+                                L"*.stp,*.dwg,*.pdf", NULL, NULL,
+                                wcwd, NULL, wsel);
+    HLog("HExportAct: ProFileMdlnameSave -> %d\n", (int)status);
+    HLogW("HExportAct: selected= ", wsel);
+
+    if (status == PRO_TK_USER_ABORT)
     {
-        HLog("HExportAct: name/path too long (base=%d dir=%d)\n",
-             (int)strlen(base), (int)strlen(dir));
+        HLog("HExportAct: user cancelled the file browser\n");
+        return 0;                                   /* 取消：安静退出 */
+    }
+    if (status != PRO_TK_NO_ERROR)
+    {
+        /* 浏览器不可用（不同版本/环境可能返回别的码）—— 退化成只问名字、
+           落到 Creo 当前工作目录，功能不至于整个不能用。
+           顺带支持在名字里直接写完整路径。 */
+        ProMdlFileName wname;
+
+        HLog("HExportAct: browser failed -> fallback to name prompt\n");
+        HMsg("EXPORT_ASK_NAME");
+        ProWindowRepaint(PRO_VALUE_UNUSED);
+        wname[0] = L'\0';
+        status = ProMessageStringRead(100, wname);
+        ProMessageClear();
+        if (status != PRO_TK_NO_ERROR)
+        {
+            HLog("HExportAct: name input cancelled (status=%d)\n", (int)status);
+            return 0;
+        }
+        if (HSplitPathW(wname, wcwd, ddir, PRO_PATH_SIZE,
+                        dbase, PRO_FILE_MDLNAME_SIZE) != 0)
+        {
+            HLog("HExportAct: bad name -> abort\n");
+            HMsg("EXPORT_FAILED");
+            return 0;
+        }
+    }
+    else if (HSplitPathW(wsel, wcwd, ddir, PRO_PATH_SIZE,
+                         dbase, PRO_FILE_MDLNAME_SIZE) != 0)
+    {
+        HLog("HExportAct: cannot split the selected path -> abort\n");
         HMsg("EXPORT_FAILED");
         return 0;
     }
 
-    /* ③ STEP：工程图关联的 3D 模型（取第一个） */
+    HLogW("HExportAct: dir    = ", ddir);
+    HLogW("HExportAct: name   = ", dbase);
+
+    /* ③ 清掉上一轮可能残留的临时文件，免得把旧的搬给用户 */
+    for (i = 0; i < 3; i++)
+        HRemoveTemp(wcwd, TMPBASE, EXTS[i]);
+
+    /* ④ STEP：工程图关联的 3D 模型（程序集只会返回根程序集） */
     if (ProDrawingSolidsCollect((ProDrawing)drawing, &solids) == PRO_TK_NO_ERROR
             && solids != NULL)
         ProArraySizeGet((ProArray)solids, &n_solids);
@@ -1359,16 +1553,15 @@ static int HExportAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
     }
     else
     {
-        ProMdlFileName wtmp;
+        ProMdlFileName wtmp2;
 
-        sprintf(nm, "%s.stp", base);
-        ProStringToWstring(wtmp, nm);
-        status = ProOutputFileMdlnameWrite((ProMdl)solids[0], wtmp,
+        swprintf(wtmp2, PRO_FILE_MDLNAME_SIZE, L"%ls.stp", TMPBASE);
+        status = ProOutputFileMdlnameWrite((ProMdl)solids[0], wtmp2,
                                            PRO_STEP_FILE, NULL, &narg, NULL, NULL);
         HLog("HExportAct: STEP -> %d\n", (int)status);
         if (status == PRO_TK_NO_LICENSE)
             no_license = 1;
-        step_ok = HEnsureExported(dir, base, ".stp");
+        step_ok = HMoveExported(wcwd, TMPBASE, ddir, dbase, L".stp");
 
         /* arg2 的传法官方自己有两套说法，两种都试：
            · 头文件 ProUtil.h:1193 —— PRO_STEP_FILE 的 arg2 是 int* 指向"数量"；
@@ -1377,31 +1570,33 @@ static int HExportAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
            第一次没落地就按官方示例再试一次 NULL，不猜。 */
         if (!step_ok)
         {
-            ProStringToWstring(wtmp, nm);
-            status = ProOutputFileMdlnameWrite((ProMdl)solids[0], wtmp,
+            ProMdlFileName wtmp3;
+
+            swprintf(wtmp3, PRO_FILE_MDLNAME_SIZE, L"%ls.stp", TMPBASE);
+            status = ProOutputFileMdlnameWrite((ProMdl)solids[0], wtmp3,
                                                PRO_STEP_FILE, NULL, NULL, NULL, NULL);
             HLog("HExportAct: STEP(retry arg2=NULL) -> %d\n", (int)status);
             if (status == PRO_TK_NO_LICENSE)
                 no_license = 1;
-            step_ok = HEnsureExported(dir, base, ".stp");
+            step_ok = HMoveExported(wcwd, TMPBASE, ddir, dbase, L".stp");
         }
         ProArrayFree((ProArray*)&solids);
     }
 
-    /* ④ DWG：工程图本身 */
+    /* ⑤ DWG：工程图本身。Creo 只看见 ASCII 临时名，中文名由我们搬过去 */
     {
-        ProMdlFileName wtmp;
-        sprintf(nm, "%s.dwg", base);
-        ProStringToWstring(wtmp, nm);
-        status = ProOutputFileMdlnameWrite(drawing, wtmp, PRO_DWG_FILE,
+        ProMdlFileName wtmp2;
+
+        swprintf(wtmp2, PRO_FILE_MDLNAME_SIZE, L"%ls.dwg", TMPBASE);
+        status = ProOutputFileMdlnameWrite(drawing, wtmp2, PRO_DWG_FILE,
                                            NULL, NULL, NULL, NULL);
         HLog("HExportAct: DWG -> %d\n", (int)status);
         if (status == PRO_TK_NO_LICENSE)
             no_license = 1;
-        dwg_ok = HEnsureExported(dir, base, ".dwg");
+        dwg_ok = HMoveExported(wcwd, TMPBASE, ddir, dbase, L".dwg");
     }
 
-    /* ⑤ PDF：工程图本身（output_file 要完整路径）
+    /* ⑥ PDF：工程图本身（output_file 要完整路径）
           固定 600 dpi + 单色；顺手关掉"导出后自动弹阅读器"。
           选项依据（ProPDF.h）：
             PRO_PDFOPT_RASTER_DPI    :157  Int, 范围 100-600, 默认 300
@@ -1410,10 +1605,14 @@ static int HExportAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
             PRO_PDFOPT_LAUNCH_VIEWER :158  Boolean, 默认 TRUE
           枚举类选项也走 ProPDFoptionsIntpropertySet（:320 注释
           "Sets the value for an integer or enum property"）。 */
+    if (HPathJoinW(wpdf, PRO_PATH_SIZE, wcwd, TMPBASE, L".pdf") != 0)
+    {
+        HLog("HExportAct: pdf path too long\n");
+    }
+    else
     {
         ProPDFOptions opts = NULL;
-        sprintf(nm, "%s\\%s.pdf", dir, base);
-        ProStringToWstring(wpdf, nm);
+
         if (ProPDFoptionsAlloc(&opts) == PRO_TK_NO_ERROR && opts != NULL)
         {
             HLog("HExportAct: PDF dpi -> %d\n",
@@ -1435,7 +1634,7 @@ static int HExportAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
             ProPDFoptionsFree(opts);
         if (status == PRO_TK_NO_LICENSE)
             no_license = 1;
-        pdf_ok = HFileExists(nm);
+        pdf_ok = HMoveExported(wcwd, TMPBASE, ddir, dbase, L".pdf");
     }
 
     HLog("HExportAct: result step=%d pdf=%d dwg=%d license_missing=%d\n",
@@ -1451,6 +1650,7 @@ static int HExportAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
     ProWindowRepaint(PRO_VALUE_UNUSED);
     return 0;
 }
+
 
 /*---------------------------------------------------------------------*\
   入口
