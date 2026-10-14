@@ -56,6 +56,7 @@
 #include <ProWindows.h>
 #include <ProGraphic.h>
 #include <ProView.h>
+#include <ProPDF.h>
 #include <windows.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -101,6 +102,7 @@
 #define CMD_INSERT   "H_InsertBalloon"
 #define CMD_DELETE   "H_DeleteBalloon"
 #define CMD_RENUM    "H_RenumberBalloon"
+#define CMD_EXPORT   "H_ExportFiles"
 
 /*---------------------------------------------------------------------*\
   全局
@@ -1208,6 +1210,249 @@ static int HDeleteAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
 }
 
 /*---------------------------------------------------------------------*\
+  命令5：一键导出 —— 把当前工程图关联的 3D 模型导成 STEP、
+          工程图本身导成 PDF 和 DWG，三个文件统一用用户输入的名字。
+
+  接口依据（全部在 D:\Creo6Toolkit 头文件里查证过，2026-10-14）：
+    · ProOutputFileMdlnameWrite(ProMdl, ProMdlFileName, ProImportExportFile,
+                                arg1..arg4)                  —— ProUtil.h:1114
+        第一个参数是 ProMdl（**不是** ProSolid），所以【工程图可以直接传】；
+        PRO_STEP_FILE = 22、PRO_DWG_FILE = 34（ProUtil.h:106 / 119）。
+        官方用法两处：
+          PTWCServerUpdateDXF.c:45  对 DXF —— 后四个参数全 NULL；
+          TestInterface.c:410       对 STEP —— arg2 传 int*（导出数量）。
+        name 只给文件名（不含路径），文件落在 Creo 当前工作目录。
+    · ProPDFExport(ProMdl, ProPath, ProPDFOptions)            —— ProPDF.h:242
+        output_file 要求**完整路径**（含扩展名）；
+        model 必须已加载且显示在窗口里 —— 我们的工程图正好满足。
+        返回码含 PRO_TK_NO_LICENSE / PRO_TK_NOT_DISPLAYED 等，逐一给提示。
+    · ProDrawingSolidsCollect(ProDrawing, ProSolid**)         —— ProDrawing.h:1571
+        取工程图里"用户显式添加过"的模型，也就是图纸关联的那张 3D 图。
+    · ProMessageStringRead(int max, wchar_t *buffer)          —— ProMessage.h:291
+        读一行键盘输入；**必须先 ProMessageDisplay 提示**；
+        用户按 Esc -> PRO_TK_MSG_USER_QUIT，直接回车 -> PRO_TK_GENERAL_ERROR。
+\*---------------------------------------------------------------------*/
+static uiCmdAccessState HExportAccess(uiCmdAccessMode access_mode)
+{
+    return ACCESS_AVAILABLE;
+}
+
+/* 导出后校正文件名：Creo 有时会自己再补一次扩展名（xxx.stp.stp），
+   有时又完全不补。统一收敛到 <base><ext>。返回 1 = 目标文件已就位。 */
+static int HEnsureExported(const char *dir, const char *base, const char *ext)
+{
+    /* 缓冲区按「UTF-8 最坏 4 字节/宽字符」给足：
+       ProWstringToString 把宽字符转成 UTF-8 时，字节数最多是宽字符数的 4 倍，
+       而一个名字里可能有中文 —— 用 PRO_PATH_SIZE 装会溢出。 */
+    char want[PRO_PATH_SIZE * 4], alt[PRO_PATH_SIZE * 4];
+
+    if (strlen(dir) + strlen(base) + strlen(ext) + 4 > sizeof(want))
+    {
+        HLog("HExport: path too long, skip existence check\n");
+        return 0;
+    }
+    sprintf(want, "%s\\%s%s", dir, base, ext);
+    if (HFileExists(want))
+        return 1;
+
+    sprintf(alt, "%s\\%s%s%s", dir, base, ext, ext);   /* 双扩展名 */
+    if (HFileExists(alt) && MoveFileA(alt, want))
+    {
+        HLog("HExport: renamed %s -> %s\n", alt, want);
+        return 1;
+    }
+
+    sprintf(alt, "%s\\%s", dir, base);                 /* 完全没扩展名 */
+    if (HFileExists(alt) && MoveFileA(alt, want))
+    {
+        HLog("HExport: renamed %s -> %s\n", alt, want);
+        return 1;
+    }
+
+    HLog("HExport: MISSING %s\n", want);
+    return 0;
+}
+
+static int HExportAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
+{
+    ProError       status;
+    ProMdl         drawing;
+    ProSolid      *solids = NULL;
+    ProMdlFileName wname;
+    ProPath        wcwd, wpdf;
+    /* 这三个 char 缓冲同样按 UTF-8 最坏情况（4 字节/宽字符）给足，
+       理由见 HEnsureExported。 */
+    char           dir[PRO_PATH_SIZE * 4];
+    char           base[PRO_PATH_SIZE * 2];
+    char           nm[PRO_PATH_SIZE * 4];
+    int            n_solids = 0, narg = 1;
+    int            step_ok = 0, pdf_ok = 0, dwg_ok = 0, no_license = 0;
+    char          *p;
+
+    status = HGetDrawing(&drawing);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("BALLOON_NO_DRAWING");
+        return 0;
+    }
+
+    /* ① 让用户输入文件名（Esc 取消） */
+    HMsg("EXPORT_ASK_NAME");
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    wname[0] = L'\0';
+    status = ProMessageStringRead(100, wname);
+    ProMessageClear();
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HLog("HExportAct: name input cancelled (status=%d)\n", (int)status);
+        return 0;                       /* Esc 或空回车：安静退出 */
+    }
+
+    ProWstringToString(base, wname);
+    p = strrchr(base, '.');             /* 用户多打了扩展名就去掉 */
+    if (p != NULL && p != base)
+        *p = '\0';
+    for (p = base; *p != '\0'; p++)     /* 文件名里不能出现的字符换成下划线 */
+        if (*p == '\\' || *p == '/' || *p == ':' || *p == '*' || *p == '?' ||
+            *p == '"' || *p == '<' || *p == '>' || *p == '|')
+            *p = '_';
+    if (base[0] == '\0')
+    {
+        HLog("HExportAct: empty name -> abort\n");
+        return 0;
+    }
+    HLog("HExportAct: base=\"%s\"\n", base);
+
+    /* ② 导出目录 = Creo 当前工作目录 */
+    if (ProDirectoryCurrentGet(wcwd) != PRO_TK_NO_ERROR)
+    {
+        HLog("HExportAct: cannot get cwd\n");
+        HMsg("EXPORT_FAILED");
+        return 0;
+    }
+    ProWstringToString(dir, wcwd);
+    HLog("HExportAct: cwd=%s\n", dir);
+
+    /* 长度闸门：下面既要把 dir+base 拼成完整路径塞进 ProPath（260 宽字符），
+       又要把 base+".stp" 塞进 ProMdlFileName（180+32+4 = 216 宽字符）。
+       ProStringToWstring 是窄 -> 宽 1:1（按 UTF-8 解码后宽字符数只会更少），
+       所以"字节数 < 上限"就能保证不越界。 */
+    if (strlen(base) + 8 >= PRO_MDLNAME_SIZE ||
+        strlen(dir) + strlen(base) + 8 >= PRO_PATH_SIZE)
+    {
+        HLog("HExportAct: name/path too long (base=%d dir=%d)\n",
+             (int)strlen(base), (int)strlen(dir));
+        HMsg("EXPORT_FAILED");
+        return 0;
+    }
+
+    /* ③ STEP：工程图关联的 3D 模型（取第一个） */
+    if (ProDrawingSolidsCollect((ProDrawing)drawing, &solids) == PRO_TK_NO_ERROR
+            && solids != NULL)
+        ProArraySizeGet((ProArray)solids, &n_solids);
+    HLog("HExportAct: drawing models=%d\n", n_solids);
+
+    if (n_solids <= 0)
+    {
+        HMsg("EXPORT_NO_MODEL");
+        if (solids) ProArrayFree((ProArray*)&solids);
+    }
+    else
+    {
+        ProMdlFileName wtmp;
+
+        sprintf(nm, "%s.stp", base);
+        ProStringToWstring(wtmp, nm);
+        status = ProOutputFileMdlnameWrite((ProMdl)solids[0], wtmp,
+                                           PRO_STEP_FILE, NULL, &narg, NULL, NULL);
+        HLog("HExportAct: STEP -> %d\n", (int)status);
+        if (status == PRO_TK_NO_LICENSE)
+            no_license = 1;
+        step_ok = HEnsureExported(dir, base, ".stp");
+
+        /* arg2 的传法官方自己有两套说法，两种都试：
+           · 头文件 ProUtil.h:1193 —— PRO_STEP_FILE 的 arg2 是 int* 指向"数量"；
+           · 官方示例 TestInterface.c:410 —— switch(export_type) 里
+             **根本没有 PRO_STEP_FILE 分支**，p_arg2 保持 NULL。
+           第一次没落地就按官方示例再试一次 NULL，不猜。 */
+        if (!step_ok)
+        {
+            ProStringToWstring(wtmp, nm);
+            status = ProOutputFileMdlnameWrite((ProMdl)solids[0], wtmp,
+                                               PRO_STEP_FILE, NULL, NULL, NULL, NULL);
+            HLog("HExportAct: STEP(retry arg2=NULL) -> %d\n", (int)status);
+            if (status == PRO_TK_NO_LICENSE)
+                no_license = 1;
+            step_ok = HEnsureExported(dir, base, ".stp");
+        }
+        ProArrayFree((ProArray*)&solids);
+    }
+
+    /* ④ DWG：工程图本身 */
+    {
+        ProMdlFileName wtmp;
+        sprintf(nm, "%s.dwg", base);
+        ProStringToWstring(wtmp, nm);
+        status = ProOutputFileMdlnameWrite(drawing, wtmp, PRO_DWG_FILE,
+                                           NULL, NULL, NULL, NULL);
+        HLog("HExportAct: DWG -> %d\n", (int)status);
+        if (status == PRO_TK_NO_LICENSE)
+            no_license = 1;
+        dwg_ok = HEnsureExported(dir, base, ".dwg");
+    }
+
+    /* ⑤ PDF：工程图本身（output_file 要完整路径）
+          固定 600 dpi + 单色；顺手关掉"导出后自动弹阅读器"。
+          选项依据（ProPDF.h）：
+            PRO_PDFOPT_RASTER_DPI    :157  Int, 范围 100-600, 默认 300
+            PRO_PDFOPT_COLOR_DEPTH   :152  Enum ProPDFColorDepth, 默认 _COLOR
+                                           枚举值 :43  _COLOR / _GRAY / _MONO
+            PRO_PDFOPT_LAUNCH_VIEWER :158  Boolean, 默认 TRUE
+          枚举类选项也走 ProPDFoptionsIntpropertySet（:320 注释
+          "Sets the value for an integer or enum property"）。 */
+    {
+        ProPDFOptions opts = NULL;
+        sprintf(nm, "%s\\%s.pdf", dir, base);
+        ProStringToWstring(wpdf, nm);
+        if (ProPDFoptionsAlloc(&opts) == PRO_TK_NO_ERROR && opts != NULL)
+        {
+            HLog("HExportAct: PDF dpi -> %d\n",
+                 (int)ProPDFoptionsIntpropertySet(opts, PRO_PDFOPT_RASTER_DPI, 600));
+            HLog("HExportAct: PDF mono -> %d\n",
+                 (int)ProPDFoptionsIntpropertySet(opts, PRO_PDFOPT_COLOR_DEPTH,
+                                                  PRO_PDF_CD_MONO));
+            HLog("HExportAct: PDF no-viewer -> %d\n",
+                 (int)ProPDFoptionsBoolpropertySet(opts, PRO_PDFOPT_LAUNCH_VIEWER,
+                                                   PRO_B_FALSE));
+        }
+        else
+        {
+            opts = NULL;                /* 拿不到就用默认配置导 */
+        }
+        status = ProPDFExport(drawing, wpdf, opts);
+        HLog("HExportAct: PDF -> %d\n", (int)status);
+        if (opts != NULL)
+            ProPDFoptionsFree(opts);
+        if (status == PRO_TK_NO_LICENSE)
+            no_license = 1;
+        pdf_ok = HFileExists(nm);
+    }
+
+    HLog("HExportAct: result step=%d pdf=%d dwg=%d license_missing=%d\n",
+         step_ok, pdf_ok, dwg_ok, no_license);
+
+    if (step_ok && pdf_ok && dwg_ok)
+        HMsg("EXPORT_OK");
+    else if (no_license)
+        HMsg("EXPORT_NO_LICENSE");
+    else
+        HMsg("EXPORT_PARTIAL");
+
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    return 0;
+}
+
+/*---------------------------------------------------------------------*\
   入口
 \*---------------------------------------------------------------------*/
 int user_initialize(
@@ -1218,7 +1463,7 @@ int user_initialize(
     wchar_t errbuf[80])
 {
     ProError    status;
-    uiCmdCmdId  cmd_add, cmd_insert, cmd_renum, cmd_delete;
+    uiCmdCmdId  cmd_add, cmd_insert, cmd_renum, cmd_delete, cmd_export;
     ProFileName msgfile;
 
     g_symdef_valid = PRO_B_FALSE;
@@ -1273,6 +1518,14 @@ int user_initialize(
         ProStringToWstring(errbuf, "H: fail to add command");
         return -1;
     }
+    status = ProCmdActionAdd(CMD_EXPORT, (uiCmdCmdActFn)HExportAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_export);
+    HLog("ProCmdActionAdd(Export)   -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
 
     /* 2. 指定命令的标签/帮助来源（按钮文字从 h_msg.txt 读）
        注意第 4 个参数 description（自定义功能区里的命令描述）：
@@ -1289,6 +1542,8 @@ int user_initialize(
         HLog("ProCmdDesignate(Renumber) -> %d\n", (int)status);
         status = ProCmdDesignate(cmd_delete, CMD_DELETE, CMD_DELETE ".Help", empty_desc, msgfile);
         HLog("ProCmdDesignate(Delete)   -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_export, CMD_EXPORT, CMD_EXPORT ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(Export)   -> %d\n", (int)status);
     }
 
     /* 3. 功能区（Ribbon）——主动调用官方 API 加载 rbn。

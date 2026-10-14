@@ -1,0 +1,4 @@
+# toolkitribbonui.rbn 是 UGC 行续格式：续行要求反斜杠后面紧跟 LF，
+# 一旦被转成 CRLF，Creo 会以 PRO_TK_INVALID_FILE(-16) 拒绝加载。
+# 因此禁止 git 对它做任何换行转换（本机 core.autocrlf=true）。
+text/ribbon/toolkitribbonui.rbn -text

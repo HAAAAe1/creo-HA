@@ -64,3 +64,27 @@ Compact all balloon numbers back to 1,2,3... (use it to close the gaps left afte
 Balloon
 Balloon
 #
+EXPORT_ASK_NAME
+Type a name for the exported files (STP / PDF / DWG), then press Enter; Esc cancels.
+#
+EXPORT_OK
+Done: STP / PDF / DWG have been created in the current working directory.
+#
+EXPORT_PARTIAL
+Some files were not created. See h_load.log in the plugin folder for details.
+#
+EXPORT_NO_LICENSE
+The required export license is missing (STEP / DWG export needs the corresponding module). See h_load.log.
+#
+EXPORT_NO_MODEL
+This drawing has no 3D model attached, so the STEP file cannot be exported.
+#
+EXPORT_FAILED
+Export failed, please retry.
+#
+H_ExportFiles
+Export STP/PDF/DWG
+#
+H_ExportFiles.Help
+One click to export: the drawing's 3D model as STEP, the drawing itself as PDF and DWG, all renamed to the name you type.
+#

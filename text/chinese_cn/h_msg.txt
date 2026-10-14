@@ -86,3 +86,35 @@ Balloon
 Balloon
 球标
 #
+EXPORT_ASK_NAME
+Type a name for the exported files (STP / PDF / DWG), then press Enter; Esc cancels.
+请输入导出文件的名称（将用于 STP / PDF / DWG 三个文件），按回车确认，Esc 取消。
+#
+EXPORT_OK
+Done: STP / PDF / DWG have been created in the current working directory.
+导出完成：STP / PDF / DWG 三个文件已生成在 Creo 当前工作目录。
+#
+EXPORT_PARTIAL
+Some files were not created. See h_load.log in the plugin folder for details.
+部分文件未能导出，详情见插件目录下的 h_load.log。
+#
+EXPORT_NO_LICENSE
+The required export license is missing (STEP / DWG export needs the corresponding module). See h_load.log.
+导出所需的模块授权不可用（STEP / DWG 导出需要相应模块授权），详情见 h_load.log。
+#
+EXPORT_NO_MODEL
+This drawing has no 3D model attached, so the STEP file cannot be exported.
+该工程图没有关联 3D 模型，无法导出 STEP 文件。
+#
+EXPORT_FAILED
+Export failed, please retry.
+导出失败，请检查后重试。
+#
+H_ExportFiles
+Export STP/PDF/DWG
+一键导出
+#
+H_ExportFiles.Help
+One click to export: the drawing's 3D model as STEP, the drawing itself as PDF and DWG, all renamed to the name you type (files go to the current working directory).
+一键导出：把工程图关联的 3D 模型导出为 STEP，把工程图本身导出为 PDF 和 DWG，三个文件统一用你输入的名字命名（生成在 Creo 当前工作目录）。
+#

@@ -24,7 +24,7 @@
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [4]
+5 containerChildrenArray [5]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_AddBalloon
@@ -55,6 +55,15 @@
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_RenumberBalloon
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue Large
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_ExportFiles
 8 mType 1
 8 Attributes 
 9 mUiAttribs [1]
