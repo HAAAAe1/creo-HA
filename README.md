@@ -1,4 +1,4 @@
-# H — Creo 工程图圆圈序号（球标）插件
+# creo-HA — Creo 工程图圆圈序号（球标）插件
 https://github.com/user-attachments/assets/3c779267-59cf-414f-9932-e56859ec0e5a
 
 在 Creo 工程图上**点位置放圆圈球标、编号自动管理**的 TOOLKIT 插件。
