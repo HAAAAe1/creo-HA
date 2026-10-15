@@ -88,3 +88,69 @@ Export Drawing
 H_ExportFiles.Help
 One click to export: the drawing's 3D model as STEP, the drawing itself as PDF and DWG, all renamed to the name you type.
 #
+H_Title
+HA
+#
+H_Func
+功能
+#
+DYNAVIEW_PICK
+Select a drawing view (general view), then click OK in the Select dialog; click Cancel or press Esc to exit.
+#
+DYNAVIEW_DRAG
+View selected. Just move the mouse to rotate the view freely (X and Y angles): move left/right to turn around the vertical axis, up/down around the horizontal axis. Middle button = done, Esc = cancel and restore.
+#
+DYNAVIEW_NO_VIEW
+No view under that point. Click inside a view (general view); press Esc to exit.
+#
+DYNAVIEW_NOT_GENERAL
+Only general views can be rotated. Projection/detail/section views are not supported.
+#
+DYNAVIEW_HAS_CHILDREN
+This view has associated child views; dynamic adjustment is not allowed.
+#
+DYNAVIEW_OK
+View rotation applied.
+#
+DYNAVIEW_CANCEL
+Cancelled; the view has been restored.
+#
+DYNAVIEW_FAILED
+Operation failed, please retry.
+#
+H_DynaView
+Dynamic View
+#
+H_DynaView.Help
+Click a drawing view (must be a general view with no child views), then hold the left mouse button and drag around the view center to rotate it freely; release to apply, or press Esc to restore the original orientation. Zoom/pan are disabled during the drag, as expected.
+#
+TOLBRUSH_PICK_SRC
+Tolerance Brush: click the SOURCE dimension whose tolerance will be copied to others. Press Esc to exit.
+#
+TOLBRUSH_NOT_DIM
+That selection is not a dimension. Please click a dimension.
+#
+TOLBRUSH_SRC_REF
+The source dimension has no settable tolerance (reference or driven dimension). Please pick another dimension.
+#
+TOLBRUSH_TARGET
+Now click each dimension that should receive this tolerance (one click each, as many as you like). Middle button or Esc to finish.
+#
+TOLBRUSH_APPLIED
+Tolerance brushed onto this dimension.
+#
+TOLBRUSH_TARGET_REF
+Skipped - that dimension is a reference or driven dimension and cannot take a tolerance.
+#
+TOLBRUSH_OK
+Tolerance brush finished.
+#
+TOLBRUSH_CANCEL
+Tolerance brush exited; no dimension was changed.
+#
+H_TolBrush
+Tolerance Brush
+#
+H_TolBrush.Help
+Pick a source dimension to read its tolerance settings (tolerance type, upper/lower values, ISO/DIN tolerance table, decimals), then click any number of other dimensions to apply the same settings to each; middle button or Esc finishes. To see tolerances, the Creo config option tol_display must be yes.
+#

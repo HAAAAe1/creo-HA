@@ -13,7 +13,7 @@
 1 onCreation 
 2 mNumComments 0
 2 mDate 
-1 groupList [1]
+1 groupList [2]
 2 groupList 
 3 ChildUnion(RbnDBGroup) ->
 4 RbnDBInheritContainer 
@@ -24,7 +24,7 @@
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [5]
+5 containerChildrenArray [4]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_AddBalloon
@@ -61,9 +61,42 @@
 10 mUiAttribs ->
 11 mKey 6
 11 mValue Large
+4 mToolLauncher 
+4 mBitmap 
+4 mPlugin 
+4 mGroupType 1
+2 groupList 
+3 ChildUnion(RbnDBGroup) ->
+4 RbnDBInheritContainer 
+5 mName user_custom_group_h_func
+5 mType 12
+5 mLabel H_Func
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [3]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_ExportFiles
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue Large
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_DynaView
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue Large
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_TolBrush
 8 mType 1
 8 Attributes 
 9 mUiAttribs [1]
@@ -80,15 +113,21 @@
 4 RbnDBInheritContainer 
 5 mName page_H_Balloon@drw_main_adb_cat
 5 mType 11
-5 mLabel Balloon
+5 mLabel H_Title
 5 mAncestor 
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [1]
+5 containerChildrenArray [2]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_balloon
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_func
 8 mType 15
 8 Attributes 
 8 mRuntimeRemoved 0

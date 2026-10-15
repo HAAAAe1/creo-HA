@@ -2,3 +2,13 @@
 # 一旦被转成 CRLF，Creo 会以 PRO_TK_INVALID_FILE(-16) 拒绝加载。
 # 因此禁止 git 对它做任何换行转换（本机 core.autocrlf=true）。
 text/ribbon/toolkitribbonui.rbn -text
+
+# ribbonui.txt 是页签/组名标签，Creo 要求**纯 LF**（usascii 无 BOM、chinese_cn 带 BOM）。
+# 同理禁止换行转换：本机 core.autocrlf=true，若被转成 CRLF，克隆下来的副本
+# 会让页签标签读不出来（且文件大小与打包校验对不上）。
+text/chinese_cn/ribbonui.txt -text
+text/usascii/ribbonui.txt -text
+
+# 消息文件固定 UTF-8 BOM + CRLF，显式声明，不受 autocrlf 影响。
+text/chinese_cn/h_msg.txt text eol=crlf
+text/usascii/h_msg.txt text eol=crlf

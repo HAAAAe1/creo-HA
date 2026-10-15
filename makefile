@@ -27,7 +27,7 @@ $(TARGET): $(OBJS)
 	$(LINK) /nologo /DLL /INCREMENTAL:NO /OUT:$(TARGET) $(OBJS) $(TKLIB) $(SYSLIBS)
 
 src\h_main.obj: src\h_main.c
-	$(CC) /nologo /c /W3 /O2 /EHsc /MD /D_PRO_MESSAGE /DWNT /D_CRT_SECURE_NO_WARNINGS /I"$(TOOLKIT_INC)" /Fo$@ src\h_main.c
+	$(CC) /nologo /c /W3 /O2 /EHsc /MD /utf-8 /D_PRO_MESSAGE /DWNT /D_CRT_SECURE_NO_WARNINGS /I"$(TOOLKIT_INC)" /Fo$@ src\h_main.c
 
 clean:
 	-del /Q $(TARGET) src\*.obj 2>nul

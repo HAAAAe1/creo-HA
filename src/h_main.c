@@ -34,6 +34,7 @@
 #include <ProUI.h>
 #include <ProMdl.h>
 #include <ProDrawing.h>
+#include <ProDrawingView.h>
 #include <ProSelection.h>
 #include <ProMenuBar.h>
 #include <ProRibbon.h>
@@ -55,6 +56,7 @@
 #include <ProMessage.h>
 #include <ProWindows.h>
 #include <ProGraphic.h>
+#include <ProDimension.h>
 #include <ProView.h>
 #include <ProPDF.h>
 #include <windows.h>
@@ -63,6 +65,7 @@
 #include <string.h>
 #include <wchar.h>
 #include <stdlib.h>
+#include <math.h>
 
 /*---------------------------------------------------------------------*\
   常量
@@ -103,6 +106,8 @@
 #define CMD_DELETE   "H_DeleteBalloon"
 #define CMD_RENUM    "H_RenumberBalloon"
 #define CMD_EXPORT   "H_ExportFiles"
+#define CMD_DYNAVIEW "H_DynaView"
+#define CMD_TOLBRUSH "H_TolBrush"
 
 /*---------------------------------------------------------------------*\
   全局
@@ -1655,6 +1660,657 @@ static int HExportAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_comm
 /*---------------------------------------------------------------------*\
   入口
 \*---------------------------------------------------------------------*/
+/*---------------------------------------------------------------------\
+  命令：视图动态调整
+  交互：点按钮 -> Creo 原生「选择」对话框选中一个普通视图（悬停高亮，
+        点「确定」）-> 选中后【直接移动鼠标】即全方位旋转：
+            鼠标上下位移 -> 绕图纸水平轴转（俯仰 = X 角）
+            鼠标左右位移 -> 绕图纸竖直轴转（偏摆 = Y 角）
+        -> 中键 = 确定完成（保留当前朝向）
+        -> Esc  = 取消（把已下发的每一步逆序取负角重放，精确恢复原朝向）
+  拾取机制（2026-10-15）：ProSelect("dwg_view", -1, ..., sel_env, ...)
+        + PRO_SELECT_DONE_REQUIRED 选择环境 = 与 HelloCreo 同一套原生交互。
+  ★ 旋转 API 定案（2026-10-15，OTK 官方用户指南 user_guide/View_Orientation.html）：
+        ProDrawingViewOrientationFromAngleSet(dwg, view, rot_ref_name, sel, angle)
+        = 绕【过视图原点、相对图纸固定】的轴旋转，不需要任何基准视图
+          => 天然无跳变、可连续累积、可逆。
+            rot_ref_name 合法值（ProDrawingView.h:200 源码注释原文）：
+                "Normal"      图纸法向轴 = 平面内自转（in-plane）
+                "Horizontal"  图纸水平轴 = 俯仰（X 角）  ★ 本命令主用
+                "Vertical"    图纸竖直轴 = 偏摆（Y 角）  ★ 本命令主用
+                "Edge/Axis"   绕选中的边或轴（sel 非 NULL）
+            sel 传 NULL 即可（非 Edge/Axis 类型忽略该参数）。
+        · 为什么必须弃用 ProDrawingViewOrientationFromNameSet：
+          OTK 指南原文「orients the specified drawing view using saved views
+          from the model」=> mdl_view_name 必须是【模型里已保存的视图】，
+          第一次调用就会把视图强行跳到该保存视图的方向（跳变），而且根本
+          无法表达「保持当前方向」。第十版实测日志 probe mdl="11" -> 0，
+          即视图当场被拉到模型保存视图 "11" 上 => 用户判定失败。
+        · ProViewRotate / ProViewMatrixSet 对「绘图 + 绘图视图」实测均返回
+          -1，不可用（14:13 / 14:17 实测，勿再试）。
+  每次改完 ProDrawingViewRegenerate + ProWindowRepaint。
+  按键状态：GetAsyncKeyState（ProMouseTrack 的 button_pressed 是事件
+        语义，按住期间再读恒为 0，不能用于按住/松开判定）。
+        本命令不需要按键：视图选中后移动鼠标即旋转。
+\*---------------------------------------------------------------------*/
+static uiCmdAccessState HDynaViewAccess(uiCmdAccessMode access_mode)
+{
+    (void)access_mode;
+    return ACCESS_AVAILABLE;
+}
+
+/* 灵敏度（度/像素）：鼠标位移 -> 增量角。0.5 = 拖 200px 转 100°（拖满半屏约转 200°），
+   跟手偏快、适合大角度翻转；历史上 0.2（细腻）→ 0.35（轻快）→ 0.5（当前，用户指定）。
+   嫌慢/嫌快只改这一个值。 */
+#define HDYNAVIEW_3D_SENS 0.5
+/* 两个轴的符号：实测哪个方向与鼠标相反，就把对应值改成 -1.0，不必动别处。
+   SIGN_X = -1.0：水平轴（俯仰）反向 —— 用户 2026-10-15 实测"上下方向反过来"。 */
+#define HDYNAVIEW_SIGN_X  (-1.0)     /* 水平轴 -> X 角（鼠标上下） */
+#define HDYNAVIEW_SIGN_Y  (+1.0)     /* 竖直轴 -> Y 角（鼠标左右） */
+/* 节流：增量角先攒着，够 HDYNAVIEW_MIN_STEP 度才下发一次（少刷屏、跟手）。 */
+#define HDYNAVIEW_MIN_STEP 0.5
+/* Esc 逆序回滚栈上限（每下发一步记一条；超出则只提示，放弃整段回滚）。 */
+#define HDYNAVIEW_UNDO_MAX 8192
+/* 连续失败多少次就认定 API 不可用、直接退出 */
+#define HDYNAVIEW_FAIL_LIMIT 8
+/* ★ FromAngleSet 的角度语义开关（唯一需要改的地方）：
+      0 = 【相对/增量】语义（默认，官方指南「around an axis」+ 对话框上是
+          「旋转」按钮，都指向"按这个角转一下"）= 每次下发本帧位移增量。
+      1 = 【绝对/累计】语义（万一实测"只微微晃、转不起来"就是它）= 每次
+          下发累计角，Esc 直接把两轴归零。
+   实测若与预期不符，只把下面的 0 改成 1 重编即可，不必动其它代码。 */
+#define HDYNAVIEW_ABSOLUTE 0
+
+#define HDYNAVIEW_AX_X 1
+#define HDYNAVIEW_AX_Y 2
+
+/* 一条已下发的旋转（Esc 回滚用；绝对语义下只用来判断"是否动过"） */
+typedef struct
+{
+    int    axis;      /* HDYNAVIEW_AX_X / HDYNAVIEW_AX_Y */
+    double angle;     /* 已下发的角（度）；相对语义回滚时取负 */
+} HDynaViewStep;
+
+/* 下发一次旋转：axis 决定绕哪根图纸轴，angle 为角度（度）。
+   rot_ref_name 是 ProName（= wchar_t[PRO_NAME_SIZE]，ProSizeConst.h:63），
+   所以必须用宽字面量，不能传窄串。 */
+static ProError HDynaViewRotate(ProDrawing drawing, ProView view, int axis, double angle)
+{
+    ProName ref;
+
+    if (axis == HDYNAVIEW_AX_X)       wcscpy(ref, L"Horizontal");
+    else if (axis == HDYNAVIEW_AX_Y)  wcscpy(ref, L"Vertical");
+    else                              return (PRO_TK_BAD_INPUTS);
+
+    return ProDrawingViewOrientationFromAngleSet(drawing, view, ref, NULL, angle);
+}
+
+static int HDynaViewAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
+{
+    ProError              status;
+    ProMdl                drawing;
+    ProSelection         *sels = NULL;
+    int                   n_sels = 0;
+    ProSelectionEnvOption env_opts[3];
+    ProSelectionEnv       sel_env = NULL;
+    ProView               view = NULL;
+    ProViewType           vtype;
+    ProView              *children = NULL;
+    int                   n_children = 0;
+    ProMouseButton        btn;
+    ProPoint3d            cur;
+    double                last_x = 0.0, last_y = 0.0; /* 上帧鼠标位置（算位移增量） */
+    int                   have_last = 0;              /* 是否已建立位移基准 */
+    double                pend_x = 0.0, pend_y = 0.0; /* 待下发的 X/Y 增量角（节流用） */
+    double                tot_x = 0.0, tot_y = 0.0;   /* 累计 X/Y 角（绝对语义/日志用） */
+    double                ax_x = 0.0, ax_y = 0.0;     /* 本次实际下发的角 */
+    int                   do_x = 0, do_y = 0;         /* 本次是否下发该轴 */
+    HDynaViewStep        *steps = NULL;               /* 已下发步序列（Esc 回滚用） */
+    int                   n_steps = 0;
+    int                   n_ok = 0, n_fail = 0;
+    int                   k;
+
+    (void)command; (void)p_value; (void)p_push_command_data;
+
+    status = HGetDrawing(&drawing);
+    if (status != PRO_TK_NO_ERROR) { HMsg("BALLOON_NO_DRAWING"); return 0; }
+
+    /* 原生选择环境：DONE_REQUIRED = 弹出「选择/确定/取消」对话框（与 HelloCreo 一致），
+       允许右键查询选择，禁止框选（视图要点选）。官方示例同款写法（TestSelect.c:670）。 */
+    env_opts[0].attribute = PRO_SELECT_DONE_REQUIRED;    env_opts[0].value = 0;
+    env_opts[1].attribute = PRO_SELECT_BY_MENU_ALLOWED;  env_opts[1].value = 1;
+    env_opts[2].attribute = PRO_SELECT_BY_BOX_ALLOWED;   env_opts[2].value = 0;
+    status = ProSelectionEnvAlloc(env_opts, 3, &sel_env);
+    HLog("HDynaViewAct: SelectionEnvAlloc -> %d\n", (int)status);
+
+    /* ============ 阶段 1：原生选择会话（悬停高亮 + 确定对话框） ============ */
+    for (;;)
+    {
+        HMsg("DYNAVIEW_PICK");
+        ProWindowRepaint(PRO_VALUE_UNUSED);
+
+        status = ProSelect((char*)"dwg_view", -1, NULL, NULL, sel_env, NULL, &sels, &n_sels);
+        HLog("HDynaViewAct: ProSelect -> %d n=%d sels=%p\n",
+             (int)status, n_sels, (void*)sels);
+        if (status != PRO_TK_NO_ERROR || n_sels < 1 || sels == NULL)
+        {
+            HLog("HDynaViewAct: selection ended without a pick\n");
+            if (sel_env) ProSelectionEnvFree(sel_env);
+            return 0;
+        }
+        HLog("HDynaViewAct: picked %d item(s)\n", n_sels);
+
+        status = ProSelectionViewGet(sels[0], &view);
+        if (status != PRO_TK_NO_ERROR || view == NULL)
+        {
+            HLog("HDynaViewAct: SelectionViewGet -> %d\n", (int)status);
+            HMsg("DYNAVIEW_NO_VIEW");
+            continue;                        /* 提示后重新选 */
+        }
+
+        /* 校验：必须是普通视图（派生视图的朝向不是自由定义的） */
+        status = ProDrawingViewTypeGet((ProDrawing)drawing, view, &vtype);
+        if (status != PRO_TK_NO_ERROR || vtype != PRO_VIEW_GENERAL)
+        {
+            HLog("HDynaViewAct: view type=%d (not general)\n", (int)vtype);
+            HMsg("DYNAVIEW_NOT_GENERAL");
+            continue;
+        }
+
+        /* 校验：不能有关联子视图（HelloCreo：有关联视图不允许动态调整） */
+        children = NULL; n_children = 0;
+        status = ProDrawingViewChildrenGet((ProDrawing)drawing, view, &children, &n_children);
+        if (status == PRO_TK_NO_ERROR && n_children > 0)
+        {
+            HLog("HDynaViewAct: view has %d children -> reject\n", n_children);
+            if (children) ProArrayFree((ProArray*)&children);
+            HMsg("DYNAVIEW_HAS_CHILDREN");
+            continue;
+        }
+        if (children) ProArrayFree((ProArray*)&children);
+        break;                               /* 拿到合法视图 */
+    }
+    if (sel_env) { ProSelectionEnvFree(sel_env); sel_env = NULL; }
+
+    HLog("HDynaViewAct: view ready (general, no children), angle mode=%s\n",
+         HDYNAVIEW_ABSOLUTE ? "absolute" : "relative");
+
+    /* ============ 阶段 2：交互主循环（选中即拖，相对旋转） ============
+         - 移动鼠标 = 旋转：上下位移 -> 绕图纸水平轴（X 角）
+                            左右位移 -> 绕图纸竖直轴（Y 角）
+         - 中键     = 确定完成（保留当前朝向）
+         - Esc      = 取消：把已下发的每一步按【逆序、取负角】重放一遍，
+                      精确回到原朝向（旋转轴固定在图纸上，旋转可逆）。
+       注意：FromAngleSet 是【相对】旋转，所以进入本阶段【不做任何
+       初始化调用】——视图原地不动，不存在跳变。 */
+    steps = (HDynaViewStep*)malloc(sizeof(HDynaViewStep) * HDYNAVIEW_UNDO_MAX);
+    HMsg("DYNAVIEW_DRAG");
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    for (;;)
+    {
+        status = ProMouseTrack(0, &btn, cur);
+        if (status != PRO_TK_NO_ERROR) break;          /* Esc 或出错：走回滚 */
+
+        if (btn & PRO_MIDDLE_BUTTON)                   /* 中键：确定完成 */
+        {
+            HLog("HDynaViewAct: done, steps=%d ok=%d fail=%d tot=(%.1f,%.1f)\n",
+                 n_steps, n_ok, n_fail, tot_x, tot_y);
+            if (steps) { free(steps); steps = NULL; }
+            HMsg("DYNAVIEW_OK");
+            return 0;
+        }
+
+        if (!have_last)                                /* 首帧：建立位移基准 */
+        {
+            last_x = cur[0]; last_y = cur[1];
+            have_last = 1;
+            Sleep(5);
+            continue;
+        }
+
+        /* 本帧位移 -> 增量角（屏幕像素，Y 轴向下为正） */
+        pend_x += (cur[1] - last_y) * HDYNAVIEW_3D_SENS * HDYNAVIEW_SIGN_X;
+        pend_y += (cur[0] - last_x) * HDYNAVIEW_3D_SENS * HDYNAVIEW_SIGN_Y;
+        last_x = cur[0]; last_y = cur[1];
+
+        if (fabs(pend_x) < HDYNAVIEW_MIN_STEP && fabs(pend_y) < HDYNAVIEW_MIN_STEP)
+        {
+            Sleep(5);
+            continue;
+        }
+
+        tot_x += pend_x;
+        tot_y += pend_y;
+
+#if HDYNAVIEW_ABSOLUTE
+        /* 绝对语义：两轴每次都发累计角，视图才会持续跟着鼠标走 */
+        do_x = 1;        do_y = 1;
+        ax_x = tot_x;    ax_y = tot_y;
+#else
+        /* 相对语义：只发本帧增量（够阈值的那个轴） */
+        do_x = (fabs(pend_x) >= HDYNAVIEW_MIN_STEP);
+        do_y = (fabs(pend_y) >= HDYNAVIEW_MIN_STEP);
+        ax_x = pend_x;   ax_y = pend_y;
+#endif
+
+        if (do_x)                                      /* 俯仰：绕图纸水平轴 */
+        {
+            status = HDynaViewRotate((ProDrawing)drawing, view, HDYNAVIEW_AX_X, ax_x);
+            HLog("HDynaViewAct: rotX d=%.2f tot=%.1f -> %d\n", ax_x, tot_x, (int)status);
+            if (status == PRO_TK_NO_ERROR)
+            {
+                n_ok++;
+                if (steps != NULL && n_steps < HDYNAVIEW_UNDO_MAX)
+                {
+                    steps[n_steps].axis  = HDYNAVIEW_AX_X;
+                    steps[n_steps].angle = ax_x;
+                    n_steps++;
+                }
+            }
+            else n_fail++;
+            pend_x = 0.0;
+        }
+
+        if (do_y)                                      /* 偏摆：绕图纸竖直轴 */
+        {
+            status = HDynaViewRotate((ProDrawing)drawing, view, HDYNAVIEW_AX_Y, ax_y);
+            HLog("HDynaViewAct: rotY d=%.2f tot=%.1f -> %d\n", ax_y, tot_y, (int)status);
+            if (status == PRO_TK_NO_ERROR)
+            {
+                n_ok++;
+                if (steps != NULL && n_steps < HDYNAVIEW_UNDO_MAX)
+                {
+                    steps[n_steps].axis  = HDYNAVIEW_AX_Y;
+                    steps[n_steps].angle = ax_y;
+                    n_steps++;
+                }
+            }
+            else n_fail++;
+            pend_y = 0.0;
+        }
+
+        /* 一次都没成功、又连续失败够多次 => API 不可用，别让用户干耗 */
+        if (n_ok == 0 && n_fail >= HDYNAVIEW_FAIL_LIMIT)
+        {
+            HLog("HDynaViewAct: FromAngleSet unavailable (fail=%d) -> abort\n", n_fail);
+            if (steps) { free(steps); steps = NULL; }
+            HMsg("DYNAVIEW_FAILED");
+            return 0;
+        }
+
+        ProDrawingViewRegenerate((ProDrawing)drawing, view);
+        ProWindowRepaint(PRO_VALUE_UNUSED);
+        Sleep(5);
+    }
+
+    /* ============ Esc / 跟踪出错：恢复原朝向 ============ */
+    HLog("HDynaViewAct: rollback %d step(s), ok=%d fail=%d tot=(%.1f,%.1f)\n",
+         n_steps, n_ok, n_fail, tot_x, tot_y);
+#if HDYNAVIEW_ABSOLUTE
+    /* 绝对语义：两轴角直接归零就是原始朝向 */
+    if (n_steps > 0)
+    {
+        status = HDynaViewRotate((ProDrawing)drawing, view, HDYNAVIEW_AX_X, 0.0);
+        HLog("HDynaViewAct: reset X -> %d\n", (int)status);
+        status = HDynaViewRotate((ProDrawing)drawing, view, HDYNAVIEW_AX_Y, 0.0);
+        HLog("HDynaViewAct: reset Y -> %d\n", (int)status);
+    }
+#else
+    /* 相对语义：逆序取负角重放，精确抵消 */
+    for (k = n_steps - 1; k >= 0; k--)
+    {
+        status = HDynaViewRotate((ProDrawing)drawing, view, steps[k].axis, -steps[k].angle);
+        if (status != PRO_TK_NO_ERROR)
+            HLog("HDynaViewAct: rollback step %d -> %d\n", k, (int)status);
+    }
+#endif
+    if (n_steps > 0)
+    {
+        ProDrawingViewRegenerate((ProDrawing)drawing, view);
+        ProWindowRepaint(PRO_VALUE_UNUSED);
+    }
+    if (steps) { free(steps); steps = NULL; }
+
+    if (n_ok == 0 && n_fail > 0) { HMsg("DYNAVIEW_FAILED"); return 0; }
+    HMsg("DYNAVIEW_CANCEL");
+    return 0;
+}
+
+
+
+/*---------------------------------------------------------------------\
+  命令：公差刷子
+  交互：点按钮 -> 点选【源尺寸】（公差的来源）-> 之后每点一个尺寸就立刻把
+        源尺寸的公差配置刷过去，可连续点任意多个 -> 中键 / Esc 结束。
+  刷入内容（逐项"读一个写一个"，全部走官方 API）：
+        ProDimensionToltypeGet  / Set   公差类型（公称/基本/极限/正负/对称/对称上标）
+        ProDimensionToleranceGet/ Set   上/下公差值
+        ProDimensionDecimalsGet / Set   公差小数位（界面上的「精度」）
+        ProDimensionTollabelGet / Set   ISO/DIN 公差表（类型 + 表名 + 列号）
+  证据链（均来自本机官方 SDK，非推测）：
+    · 官方示例 protk_appls/pt_examples/pt_dbase/TestDimension.c:305/314 ——
+      ProDimensionToleranceGet 读进变量 → ProDimensionToleranceSet 原样写回；
+      :334 ToltypeSet、:340/:346 DecimalsGet/Set 同款。这就是"刷"的标准写法。
+    · 选择过滤名 "dimension"（TestDimension.c:168）；选择 → 句柄用
+      ProSelectionModelitemGet（TestDimension.c:168/1098）；ProDimension 就是
+      ProModelitem 的 typedef 别名（ProObjects.h:419-429），PRO_DIMENSION=8
+      （ProObjects.h:32）。
+  ★ 为什么【不做】"极限值按名义尺寸换算"：OTK 官方用户指南
+    user_guide/Dimension_Tolerances.html 说明，这些接口取回的是公差值本身
+    （例子：上下公差 0.123456 时"显示值"取回 0.12），不是"名义值+公差"的绝对
+    极限；所以逐项原样复制才对，任何按名义值换算都会算错。
+  ★ 公差是否显示由 config 选项 tol_display 决定（API 只有
+    ProDimensionIsToleranceDisplayed 可读、没有 Set），源尺寸若没开显示，
+    刷完也看不见 —— 日志会把 displayed 打出来。
+  ★ 参考尺寸/从动尺寸不能设公差，ToltypeGet 会返回 BAD_CONTEXT，据此拦掉。
+\*---------------------------------------------------------------------*/
+static uiCmdAccessState HTolBrushAccess(uiCmdAccessMode access_mode)
+{
+    (void)access_mode;
+    return ACCESS_AVAILABLE;
+}
+
+/* 源尺寸的公差配置（刷子刷的就是这一整套） */
+typedef struct
+{
+    ProDimToleranceType type;                 /* 公差类型 */
+    double              upper;                /* 上公差（极限上限 / 正偏差） */
+    double              lower;                /* 下公差（极限下限 / 负偏差） */
+    int                 decimals;             /* 公差小数位 */
+    int                 has_decimals;         /* DecimalsGet 是否成功 */
+    ProToleranceTable   table_type;           /* ISO/DIN 公差表类型 */
+    wchar_t             table[PRO_NAME_SIZE]; /* 公差表名（孔/轴表才用） */
+    int                 column;               /* 公差表列号 */
+    int                 has_label;            /* 是否真的有公差表标签 */
+    ProBoolean          displayed;            /* 公差当前是否显示（只读） */
+} HTolBrushSpec;
+
+/* 从源尺寸读出整套公差配置 */
+static ProError HTolBrushRead(ProDimension *dim, HTolBrushSpec *spec)
+{
+    ProError status;
+
+    memset(spec, 0, sizeof(HTolBrushSpec));
+    spec->table_type = PROTOLTABLE_NONE;
+    spec->table[0]   = L'\0';
+
+    status = ProDimensionToltypeGet(dim, &spec->type);
+    if (status != PRO_TK_NO_ERROR)
+        return status;                       /* 参考尺寸会返回 PRO_TK_BAD_CONTEXT */
+
+    status = ProDimensionToleranceGet(dim, &spec->upper, &spec->lower);
+    if (status != PRO_TK_NO_ERROR)
+        return status;
+
+    status = ProDimensionDecimalsGet(dim, &spec->decimals);
+    spec->has_decimals = (status == PRO_TK_NO_ERROR) ? 1 : 0;
+
+    status = ProDimensionTollabelGet(dim, &spec->table_type,
+                                     spec->table, &spec->column);
+    spec->has_label = (status == PRO_TK_NO_ERROR) ? 1 : 0;
+
+    spec->displayed = PRO_B_FALSE;
+    ProDimensionIsToleranceDisplayed(dim, &spec->displayed);
+    return PRO_TK_NO_ERROR;
+}
+
+/* 把整套公差配置写到目标尺寸；返回第一个失败码 */
+/* 公差快照：用来做「写前 / 写后」回读对比，判定到底写进去没有。
+   ★ 只报"成功"是靠不住的 —— 必须 Get 回来对上账才算真刷上。 */
+typedef struct
+{
+    int                 ok;      /* Get 是否成功 */
+    ProDimToleranceType type;    /* 公差类型 */
+    double              upper;   /* 上公差 */
+    double              lower;   /* 下公差 */
+    ProBoolean          disp;    /* 该尺寸的公差当前是否显示 */
+} HTolSnap;
+
+/* 读尺寸 owner 的身份，排"对象定位错"用 */
+static void HTolOwnerRead(ProDimension *dim, int *mdl_type, int *mdl_id)
+{
+    *mdl_type = -1;
+    *mdl_id   = -1;
+    if (dim->owner == NULL) return;
+    {
+        ProMdlType t = PRO_MDL_UNUSED;
+        ProMdlIdGet(dim->owner, mdl_id);
+        ProMdlTypeGet(dim->owner, &t);
+        *mdl_type = (int)t;
+    }
+}
+
+static void HTolSnapRead(ProDimension *dim, ProDrawing dwg, HTolSnap *s)
+{
+    s->ok    = 0;
+    s->type  = PRO_TOL_DEFAULT;
+    s->upper = 0.0;
+    s->lower = 0.0;
+    s->disp  = PRO_B_FALSE;
+
+    if (ProDimensionToltypeGet(dim, &s->type) != PRO_TK_NO_ERROR) return;
+    if (ProDimensionToleranceGet(dim, &s->upper, &s->lower) != PRO_TK_NO_ERROR) return;
+
+    /* 绘图尺寸有专用查询（ProDimension.h:1221 "Indicates whether a drawing
+       dimension's tolerance is visible or not"），比通用版更准，优先用。 */
+    if (dwg != NULL)
+        ProDrawingDimensionIsToleranceDisplayed(dwg, dim, &s->disp);
+    else
+        ProDimensionIsToleranceDisplayed(dim, &s->disp);
+
+    s->ok = 1;
+}
+
+/* 把整套公差配置写到目标尺寸；返回第一个失败码。
+   ★ dwg 用于查询「绘图尺寸的公差是否可见」。
+   ★ 本函数把「写前 / 写后」都回读一遍打进日志：这是排「点了没反应」的唯一硬证据 ——
+     VERDICT=WRITTEN 说明 API 真写进去了（那问题在显示/刷新）；
+     VERDICT=NOT-WRITTEN 说明 API 只报成功没落地（那是对象定位/上下文问题）。 */
+static ProError HTolBrushApply(HTolBrushSpec *spec, ProDimension *dim, ProDrawing dwg)
+{
+    ProError status;
+    ProError first = PRO_TK_NO_ERROR;
+    HTolSnap before, after;
+    int      own_type = -1, own_id = -1;
+    ProBoolean driven = PRO_B_FALSE;
+    double   disp_up = 0.0, disp_lo = 0.0;
+    int      written;
+
+    HTolSnapRead(dim, dwg, &before);
+
+    /* 先定类型、再写值 —— 顺序反了在「极限/正负」之间切换时值会被重新解释 */
+    status = ProDimensionToltypeSet(dim, spec->type);
+    if (status != PRO_TK_NO_ERROR) first = status;
+
+    status = ProDimensionToleranceSet(dim, spec->upper, spec->lower);
+    if (status != PRO_TK_NO_ERROR && first == PRO_TK_NO_ERROR) first = status;
+
+    if (spec->has_decimals)
+    {
+        status = ProDimensionDecimalsSet(dim, spec->decimals);
+        if (status != PRO_TK_NO_ERROR && first == PRO_TK_NO_ERROR) first = status;
+    }
+
+    if (spec->has_label)
+    {
+        status = ProDimensionTollabelSet(dim, spec->table_type,
+                                         spec->table, spec->column);
+        if (status != PRO_TK_NO_ERROR && first == PRO_TK_NO_ERROR) first = status;
+    }
+
+    HTolSnapRead(dim, dwg, &after);
+
+    /* 显示的（四舍五入后）上下极限：看界面数值有没有跟着变 */
+    disp_up = 0.0; disp_lo = 0.0;
+    ProDimensionDisplayedToleranceGet(dim, &disp_up, &disp_lo);
+
+    written = (after.ok &&
+               after.type == spec->type &&
+               after.upper > spec->upper - 1e-9 && after.upper < spec->upper + 1e-9 &&
+               after.lower > spec->lower - 1e-9 && after.lower < spec->lower + 1e-9);
+
+    HLog("HTolBrushApply: id=%d rc=%d\n", dim->id, (int)first);
+    HLog("HTolBrushApply:   before ok=%d type=%d up=%.4f lo=%.4f disp=%d\n",
+         before.ok, (int)before.type, before.upper, before.lower, (int)before.disp);
+    HLog("HTolBrushApply:   want   type=%d up=%.4f lo=%.4f\n",
+         (int)spec->type, spec->upper, spec->lower);
+    HLog("HTolBrushApply:   after  ok=%d type=%d up=%.4f lo=%.4f disp=%d dispval=%.4f/%.4f\n",
+         after.ok, (int)after.type, after.upper, after.lower, (int)after.disp,
+         disp_up, disp_lo);
+    HTolOwnerRead(dim, &own_type, &own_id);
+    driven = PRO_B_FALSE;
+    ProDimensionIsDriving(dim, &driven);
+    HLog("HTolBrushApply:   owner mdltype=%d mdlid=%d driven=%d\n",
+         own_type, own_id, (int)driven);
+
+    HLog("HTolBrushApply:   VERDICT=%s\n",
+         written ? "WRITTEN" : (after.ok ? "NOT-WRITTEN" : "READBACK-FAILED"));
+
+    return first;
+}
+
+static int HTolBrushAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
+{
+    ProError              status;
+    ProMdl                drawing;
+    ProSelection         *sels = NULL;
+    int                   n_sels = 0;
+    ProSelectionEnvOption env_opts[3];
+    ProSelectionEnv       sel_env = NULL;
+    ProDimension          src;
+    ProDimension          dim;
+    HTolBrushSpec         spec;
+    int                   n_applied = 0, n_fail = 0, n_skip = 0;
+    ProView               view = NULL;
+
+    (void)command; (void)p_value; (void)p_push_command_data;
+
+    status = HGetDrawing(&drawing);
+    if (status != PRO_TK_NO_ERROR) { HMsg("BALLOON_NO_DRAWING"); return 0; }
+
+    /* 单选即返回（不要「确定」对话框）：刷子是连点操作，弹框会卡手。
+       中键 / Esc = 结束刷。 */
+    env_opts[0].attribute = PRO_SELECT_DONE_REQUIRED;    env_opts[0].value = 0;
+    env_opts[1].attribute = PRO_SELECT_BY_MENU_ALLOWED;  env_opts[1].value = 1;
+    env_opts[2].attribute = PRO_SELECT_BY_BOX_ALLOWED;   env_opts[2].value = 0;
+    status = ProSelectionEnvAlloc(env_opts, 3, &sel_env);
+    HLog("HTolBrushAct: SelectionEnvAlloc -> %d\n", (int)status);
+
+    /* ============ 阶段 1：点选源尺寸 ============ */
+    HMsg("TOLBRUSH_PICK_SRC");
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    status = ProSelect((char*)"dimension", 1, NULL, NULL, sel_env, NULL, &sels, &n_sels);
+    HLog("HTolBrushAct: src ProSelect -> %d n=%d\n", (int)status, n_sels);
+    if (status != PRO_TK_NO_ERROR || n_sels < 1 || sels == NULL)
+    {
+        HLog("HTolBrushAct: no source dimension -> exit\n");
+        /* ★ 不 free sels：ProSelect 返回的是 Creo 的静态内存
+           （ProSelection.h:495-500），free 它会破坏堆当场崩溃 */
+        if (sel_env) ProSelectionEnvFree(sel_env);
+        return 0;
+    }
+
+    status = ProSelectionModelitemGet(sels[0], &src);
+    sels = NULL;   /* ★ 只清指针，绝不 ProSelectionarrayFree —— 见上 */
+
+    HLog("HTolBrushAct: src ModelitemGet -> %d type=%d id=%d\n",
+         (int)status, (int)src.type, src.id);
+    if (status != PRO_TK_NO_ERROR || src.type != PRO_DIMENSION)
+    {
+        HMsg("TOLBRUSH_NOT_DIM");
+        if (sel_env) ProSelectionEnvFree(sel_env);
+        return 0;
+    }
+
+    status = HTolBrushRead(&src, &spec);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HLog("HTolBrushAct: read source tolerance -> %d (reference dim?)\n", (int)status);
+        HMsg("TOLBRUSH_SRC_REF");
+        if (sel_env) ProSelectionEnvFree(sel_env);
+        return 0;
+    }
+    HLog("HTolBrushAct: src spec type=%d upper=%.4f lower=%.4f decimals=%d(%d) "
+         "label=%d(%d/%ls/%d) displayed=%d\n",
+         (int)spec.type, spec.upper, spec.lower, spec.decimals, spec.has_decimals,
+         spec.has_label, (int)spec.table_type, spec.table, spec.column,
+         (int)spec.displayed);
+
+    /* ============ 阶段 2：连点目标尺寸，点一个刷一个 ============ */
+    HMsg("TOLBRUSH_TARGET");
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    for (;;)
+    {
+        sels = NULL; n_sels = 0;
+        status = ProSelect((char*)"dimension", 1, NULL, NULL, sel_env, NULL, &sels, &n_sels);
+        if (status != PRO_TK_NO_ERROR || n_sels < 1 || sels == NULL)
+        {
+            HLog("HTolBrushAct: target selection ended -> stop\n");
+            break;                     /* ★ 同样不 free sels */
+        }
+
+        status = ProSelectionModelitemGet(sels[0], &dim);
+
+        /* 顺手拿到这个尺寸所在的视图：公差改了之后要重生成该视图，
+           绘图的显示列表才会重算（尺寸来自 3D 模型时尤其必须）。 */
+        view = NULL;
+        ProSelectionViewGet(sels[0], &view);
+
+        sels = NULL;                   /* ★ 不 free，只清指针 */
+
+        if (status != PRO_TK_NO_ERROR || dim.type != PRO_DIMENSION)
+        {
+            n_skip++;
+            HLog("HTolBrushAct: target is not a dimension -> skip\n");
+            continue;
+        }
+        if (dim.id == src.id && dim.owner == src.owner)
+        {
+            n_skip++;
+            HLog("HTolBrushAct: target == source -> skip\n");
+            continue;
+        }
+
+        status = HTolBrushApply(&spec, &dim, (ProDrawing)drawing);
+        if (status == PRO_TK_NO_ERROR)
+        {
+            n_applied++;
+            HLog("HTolBrushAct: applied to dim id=%d\n", dim.id);
+            HMsg("TOLBRUSH_APPLIED");
+        }
+        else
+        {
+            n_fail++;
+            HLog("HTolBrushAct: apply to dim id=%d -> %d (reference dim?)\n",
+                 dim.id, (int)status);
+            HMsg("TOLBRUSH_TARGET_REF");
+        }
+
+        /* 刷新链：重生成视图（重算显示列表）+ Repaint（走 View>Repaint）
+           + Refresh（清临时图形）。只 Repaint 不够 —— 显示列表不重算，
+           尺寸文字就不会重画，表现就是"点了没反应"。 */
+        if (view != NULL)
+        {
+            status = ProDrawingViewRegenerate((ProDrawing)drawing, view);
+            HLog("HTolBrushAct: view regenerate -> %d\n", (int)status);
+        }
+        ProWindowRepaint(PRO_VALUE_UNUSED);
+        ProWindowRefresh(PRO_VALUE_UNUSED);
+    }
+
+    if (sel_env) { ProSelectionEnvFree(sel_env); sel_env = NULL; }
+
+    HLog("HTolBrushAct: done, applied=%d failed=%d skipped=%d\n",
+         n_applied, n_fail, n_skip);
+    if (n_applied > 0) HMsg("TOLBRUSH_OK");
+    else               HMsg("TOLBRUSH_CANCEL");
+    return 0;
+}
+
+
 int user_initialize(
     int    argc,
     char  *argv[],
@@ -1663,7 +2319,8 @@ int user_initialize(
     wchar_t errbuf[80])
 {
     ProError    status;
-    uiCmdCmdId  cmd_add, cmd_insert, cmd_renum, cmd_delete, cmd_export;
+    uiCmdCmdId  cmd_add, cmd_insert, cmd_renum, cmd_delete, cmd_export, cmd_dynaview;
+    uiCmdCmdId  cmd_tolbrush;
     ProFileName msgfile;
 
     g_symdef_valid = PRO_B_FALSE;
@@ -1726,6 +2383,22 @@ int user_initialize(
         ProStringToWstring(errbuf, "H: fail to add command");
         return -1;
     }
+    status = ProCmdActionAdd(CMD_DYNAVIEW, (uiCmdCmdActFn)HDynaViewAct,
+        uiProe2ndImmediate, HDynaViewAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_dynaview);
+    HLog("ProCmdActionAdd(DynaView) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_TOLBRUSH, (uiCmdCmdActFn)HTolBrushAct,
+        uiProe2ndImmediate, HTolBrushAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_tolbrush);
+    HLog("ProCmdActionAdd(TolBrush) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
 
     /* 2. 指定命令的标签/帮助来源（按钮文字从 h_msg.txt 读）
        注意第 4 个参数 description（自定义功能区里的命令描述）：
@@ -1744,6 +2417,10 @@ int user_initialize(
         HLog("ProCmdDesignate(Delete)   -> %d\n", (int)status);
         status = ProCmdDesignate(cmd_export, CMD_EXPORT, CMD_EXPORT ".Help", empty_desc, msgfile);
         HLog("ProCmdDesignate(Export)   -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_dynaview, CMD_DYNAVIEW, CMD_DYNAVIEW ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(DynaView) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_tolbrush, CMD_TOLBRUSH, CMD_TOLBRUSH ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(TolBrush) -> %d\n", (int)status);
     }
 
     /* 3. 功能区（Ribbon）——主动调用官方 API 加载 rbn。
