@@ -12,3 +12,7 @@ text/usascii/ribbonui.txt -text
 # 消息文件固定 UTF-8 BOM + CRLF，显式声明，不受 autocrlf 影响。
 text/chinese_cn/h_msg.txt text eol=crlf
 text/usascii/h_msg.txt text eol=crlf
+
+# 技术要求模板：按行切分、记事本可直编，统一成 CRLF
+# （程序兼容裸 LF，但 CRLF 在记事本里显示正常）
+templates/**/*.txt text eol=crlf

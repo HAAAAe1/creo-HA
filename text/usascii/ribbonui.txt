@@ -10,3 +10,23 @@ HA
 H_Func
 Functions
 
+
+#H_Scale
+H_Scale
+Drawing Scale
+#H_ScaleMore
+H_ScaleMore
+More Scales
+
+#H_Session
+H_Session
+Session
+#H_SessionOps
+H_SessionOps
+Session Ops
+#H_Annot
+H_Annot
+Annotate
+#H_AnnotNote
+H_AnnotNote
+Note

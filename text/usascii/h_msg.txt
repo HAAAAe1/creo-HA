@@ -154,3 +154,357 @@ Tolerance Brush
 H_TolBrush.Help
 Pick a source dimension to read its tolerance settings (tolerance type, upper/lower values, ISO/DIN tolerance table, decimals), then click any number of other dimensions to apply the same settings to each; middle button or Esc finishes. To see tolerances, the Creo config option tol_display must be yes.
 #
+SCALE_NO_DRAWING
+Please run this command in a drawing.
+#
+SCALE_FAILED
+Failed to set the drawing scale. See h_load.log in the plugin folder.
+#
+SCALE_OK
+Drawing scale applied.
+#
+#
+SCALE_ASK
+Enter drawing scale (e.g. 1:2.5, 2.5:1, 0.4). Esc to cancel:
+#
+SCALE_CANCEL
+Scale change cancelled.
+#
+SCALE_INVALID
+Invalid scale. Use a format like 1:2.5, 2.5:1, 0.4 or 1/3.
+#
+#
+H_Scale_1_1
+1:1
+#
+H_Scale_1_1.Help
+Set the drawing scale to 1:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_2
+1:2
+#
+H_Scale_1_2.Help
+Set the drawing scale to 1:2. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_3
+1:3
+#
+H_Scale_1_3.Help
+Set the drawing scale to 1:3. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_4
+1:4
+#
+H_Scale_1_4.Help
+Set the drawing scale to 1:4. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_2_1
+2:1
+#
+H_Scale_2_1.Help
+Set the drawing scale to 2:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_3_1
+3:1
+#
+H_Scale_3_1.Help
+Set the drawing scale to 3:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_4_1
+4:1
+#
+H_Scale_4_1.Help
+Set the drawing scale to 4:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_2_3
+2:3
+#
+H_Scale_2_3.Help
+Set the drawing scale to 2:3. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_2_5
+2:5
+#
+H_Scale_2_5.Help
+Set the drawing scale to 2:5. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_5
+1:5
+#
+H_Scale_1_5.Help
+Set the drawing scale to 1:5. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_6
+1:6
+#
+H_Scale_1_6.Help
+Set the drawing scale to 1:6. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_8
+1:8
+#
+H_Scale_1_8.Help
+Set the drawing scale to 1:8. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_10
+1:10
+#
+H_Scale_1_10.Help
+Set the drawing scale to 1:10. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_12
+1:12
+#
+H_Scale_1_12.Help
+Set the drawing scale to 1:12. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_15
+1:15
+#
+H_Scale_1_15.Help
+Set the drawing scale to 1:15. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_1_20
+1:20
+#
+H_Scale_1_20.Help
+Set the drawing scale to 1:20. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_3_2
+3:2
+#
+H_Scale_3_2.Help
+Set the drawing scale to 3:2. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_5_2
+5:2
+#
+H_Scale_5_2.Help
+Set the drawing scale to 5:2. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_5_1
+5:1
+#
+H_Scale_5_1.Help
+Set the drawing scale to 5:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_6_1
+6:1
+#
+H_Scale_6_1.Help
+Set the drawing scale to 6:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_8_1
+8:1
+#
+H_Scale_8_1.Help
+Set the drawing scale to 8:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_10_1
+10:1
+#
+H_Scale_10_1.Help
+Set the drawing scale to 10:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_12_1
+12:1
+#
+H_Scale_12_1.Help
+Set the drawing scale to 12:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_15_1
+15:1
+#
+H_Scale_15_1.Help
+Set the drawing scale to 15:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_Scale_20_1
+20:1
+#
+H_Scale_20_1.Help
+Set the drawing scale to 20:1. This changes the sheet scale; views that have their own custom scale are not affected.
+#
+H_ScaleCustom
+Custom Scale...
+#
+H_ScaleCustom.Help
+Type a ratio in the message line to set the drawing scale. Formats: 1:2.5, 2.5:1, 0.4, 1/3. Press Esc or Enter to cancel.
+#
+#
+H_TechReq
+Technical Requirements
+#
+H_TechReq.Help
+Pick a text template from the plugin's templates folder; the whole file becomes one note. Choose the file, then click the placement point. Lines longer than 80 characters are truncated.
+#
+TECHREQ_NO_DRAWING
+Please run this command in a drawing.
+#
+TECHREQ_NO_TEMPLATE
+Cannot open the template browser. Check the templates folder in the plugin directory.
+#
+TECHREQ_EMPTY
+The template is empty or unreadable.
+#
+TECHREQ_ASK
+Click the position for the note. Esc to cancel.
+#
+TECHREQ_CANCEL
+Note placement cancelled.
+#
+TECHREQ_FAILED
+Failed to create the note. See h_load.log for details.
+#
+TECHREQ_OK
+Technical requirements inserted.
+#
+H_KeyDim
+Key Dimension
+#
+H_KeyDim.Help
+Click each dimension you want to mark; a star is added in front of the dimension text. Middle-click or Esc to finish.
+#
+KEYDIM_PICK
+Click the dimensions to mark. Middle-click or Esc to finish.
+#
+KEYDIM_APPLIED
+Star added.
+#
+KEYDIM_ALREADY
+Already marked, skipped.
+#
+KEYDIM_FAIL
+Cannot modify this dimension (reference or driven dimension).
+#
+KEYDIM_NOT_DIM
+Not a dimension, skipped.
+#
+KEYDIM_OK
+Key dimensions marked.
+#
+KEYDIM_CANCEL
+No dimension marked.
+#
+H_KeyDimClear
+Clear Key Dimension
+#
+H_KeyDimClear.Help
+Click each dimension whose star you want to remove. Middle-click or Esc to finish.
+#
+KEYDIMC_PICK
+Click the dimensions to clear. Middle-click or Esc to finish.
+#
+KEYDIMC_CLEARED
+Star removed.
+#
+KEYDIMC_NOMARK
+Not marked, skipped.
+#
+KEYDIMC_FAIL
+Cannot modify this dimension (reference or driven dimension).
+#
+KEYDIMC_OK
+Key dimension marks cleared.
+#
+KEYDIMC_CANCEL
+No mark removed.
+#
+H_OpenWorkDir
+Open Work Directory
+#
+H_OpenWorkDir.Help
+Open the current working directory in File Explorer
+#
+H_SetWorkDir
+Set Working Directory
+#
+H_SetWorkDir.Help
+Choose a folder and make it the Creo working directory
+#
+H_OpenMdlDir
+Open Model Directory
+#
+H_OpenMdlDir.Help
+Open the folder of the active model in File Explorer
+#
+H_MdlToDir
+Copy Models To...
+#
+H_MdlToDir.Help
+Back up all models in session to a chosen folder
+#
+H_PurgeOld
+Purge Old Versions
+#
+H_PurgeOld.Help
+Delete old version files (.prt.N / .asm.N ...) in the working directory
+#
+H_EraseIdle
+Erase Not Displayed
+#
+H_EraseIdle.Help
+Erase all models not shown in any window from session
+#
+H_CleanJunk
+Clean Up Junk Files
+#
+H_CleanJunk.Help
+Delete temporary files (.err .out .idx .xpr ...) in the working directory
+#
+SESSION_NO_WORKDIR
+Cannot read the current working directory.
+#
+SESSION_WORKDIR_OPENED
+Working directory opened in File Explorer.
+#
+SESSION_OPEN_FAIL
+Failed to open the folder.
+#
+SESSION_MDLDIR_OPENED
+Model folder opened in File Explorer.
+#
+SESSION_SETDIR_OK
+Working directory changed.
+#
+SESSION_SETDIR_FAIL
+Failed to set the working directory.
+#
+SESSION_NO_MDL
+No model in session. Open a model first.
+#
+SESSION_BACKUP_OK
+Models backed up to the chosen folder.
+#
+SESSION_BACKUP_FAIL
+Backup failed. See h_load.log for details.
+#
+SESSION_PURGE_ASK
+Delete old version files in the working directory? Type Y and press Enter to go on, or press Enter to cancel.
+#
+SESSION_PURGE_OK
+Old version files deleted.
+#
+SESSION_PURGE_NONE
+No old version file found.
+#
+SESSION_CLEAN_ASK
+Delete junk files (.err .out .idx .xpr ...) in the working directory? Type Y and press Enter to go on, or press Enter to cancel.
+#
+SESSION_CLEAN_OK
+Junk files cleaned up.
+#
+SESSION_CLEAN_NONE
+No junk file found.
+#
+SESSION_ERASE_OK
+Idle models erased.
+#
+SESSION_ERASE_FAIL
+Failed to erase models.
+#
+SESSION_BUSY
+Creo is busy, try again later.
+#
+SESSION_CANCEL
+Cancelled.
+#

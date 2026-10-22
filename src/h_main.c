@@ -60,6 +60,7 @@
 #include <ProView.h>
 #include <ProPDF.h>
 #include <windows.h>
+#include <shellapi.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -108,6 +109,46 @@
 #define CMD_EXPORT   "H_ExportFiles"
 #define CMD_DYNAVIEW "H_DynaView"
 #define CMD_TOLBRUSH "H_TolBrush"
+#define CMD_TECHREQ "H_TechReq"
+#define CMD_KEYDIM  "H_KeyDim"
+#define CMD_KEYDIMC "H_KeyDimClear"
+
+#define CMD_OPENWORKDIR "H_OpenWorkDir"
+#define CMD_SETWORKDIR  "H_SetWorkDir"
+#define CMD_OPENMDLDIR  "H_OpenMdlDir"
+#define CMD_MDLTODIR    "H_MdlToDir"
+#define CMD_PURGEOLD    "H_PurgeOld"
+#define CMD_ERASEIDLE   "H_EraseIdle"
+#define CMD_CLEANJUNK   "H_CleanJunk"
+#define CMD_SCALE_1_1 "H_Scale_1_1"
+#define CMD_SCALE_1_2 "H_Scale_1_2"
+#define CMD_SCALE_1_3 "H_Scale_1_3"
+#define CMD_SCALE_1_4 "H_Scale_1_4"
+#define CMD_SCALE_2_1 "H_Scale_2_1"
+#define CMD_SCALE_3_1 "H_Scale_3_1"
+#define CMD_SCALE_4_1 "H_Scale_4_1"
+#define CMD_SCALE_2_3 "H_Scale_2_3"
+#define CMD_SCALE_2_5 "H_Scale_2_5"
+#define CMD_SCALE_1_5 "H_Scale_1_5"
+#define CMD_SCALE_1_6 "H_Scale_1_6"
+#define CMD_SCALE_1_8 "H_Scale_1_8"
+#define CMD_SCALE_1_10 "H_Scale_1_10"
+#define CMD_SCALE_1_12 "H_Scale_1_12"
+#define CMD_SCALE_1_15 "H_Scale_1_15"
+#define CMD_SCALE_1_20 "H_Scale_1_20"
+#define CMD_SCALE_3_2 "H_Scale_3_2"
+#define CMD_SCALE_5_2 "H_Scale_5_2"
+#define CMD_SCALE_5_1 "H_Scale_5_1"
+#define CMD_SCALE_6_1 "H_Scale_6_1"
+#define CMD_SCALE_8_1 "H_Scale_8_1"
+#define CMD_SCALE_10_1 "H_Scale_10_1"
+#define CMD_SCALE_12_1 "H_Scale_12_1"
+#define CMD_SCALE_15_1 "H_Scale_15_1"
+#define CMD_SCALE_20_1 "H_Scale_20_1"
+
+
+/* 自定义比例（弹输入框） */
+#define CMD_SCALE_CUSTOM "H_ScaleCustom"
 
 /*---------------------------------------------------------------------*\
   全局
@@ -2310,6 +2351,1334 @@ static int HTolBrushAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_co
     return 0;
 }
 
+/*---------------------------------------------------------------------*\
+  重点尺寸 / 取消重点尺寸：在尺寸文本【前面】加一个 ★，或者把它去掉
+
+  交互（两个命令完全一样）：点按钮 -> 消息行提示 -> 连点尺寸
+        （点一个处理一个）-> 中键 / Esc 结束
+        ★ 拾取会话照抄公差刷子（HTolBrushAct）：PRO_SELECT_DONE_REQUIRED=0
+          单选即返回，不弹「确定」框；中键 / Esc 由 ProSelect 自己结束。
+
+  ★ 实现选的是【尺寸前缀】ProDimensionPrefixSet，不是改尺寸文本：
+      - Creo 的尺寸 = 前缀 + 数值 + 后缀，前缀是独立字段（功能区「前缀」框、
+        右键 Properties 里都能看到），改它不会破坏由模型带出来的数值文本；
+      - ProDimensionTextSet 是「Modify > Text」的等价物，会把整个文本覆盖掉
+        （还得自己写 @D 之类的占位符），风险大，不用。
+      - 前缀/后缀 API 在 ProDimension.h:974/994/1014/1036。
+  ★ 加：原有前缀原样保留，★ 只插到最前面（"2x" -> "★2x"）；
+       已经有 ★ 的尺寸跳过，不重复叠（幂等）。
+  ★ 取消：删掉前缀里【所有】★，其余字符原样保留；没有 ★ 就跳过。
+  ★ 改完必须 ProDrawingViewRegenerate（只 Repaint 等于"点了没反应"，
+    公差刷子踩过同一个坑，见那段注释）。
+\*---------------------------------------------------------------------*/
+
+#define KEYDIM_MARK L"★"               /* U+2605 BLACK STAR */
+
+#define KEYDIM_ADD    0
+#define KEYDIM_CLEAR  1
+
+/* 打标记。*already 输出 1 表示之前就标过（本次没改）。 */
+static ProError HKeyDimMark(ProDimension *dim, int *already)
+{
+    ProLine  old_prefix;
+    ProLine  new_prefix;
+    ProError status;
+
+    *already = 0;
+    old_prefix[0] = L'\0';
+
+    /* 没有前缀时这里会回 PRO_TK_E_NOT_FOUND(-5)，不是错，当空串处理 */
+    status = ProDimensionPrefixGet(dim, old_prefix);
+    if (status != PRO_TK_NO_ERROR)
+        old_prefix[0] = L'\0';
+
+    if (wcsstr(old_prefix, KEYDIM_MARK) != NULL)
+    {
+        *already = 1;
+        HLog("HKeyDimMark: id=%d already marked, skip\n", dim->id);
+        return PRO_TK_NO_ERROR;
+    }
+
+    /* ★ 放最前面，原有前缀（比如 "2x"）接在后面 */
+    if (swprintf_s(new_prefix, PRO_LINE_SIZE, L"%s%s",
+                   KEYDIM_MARK, old_prefix) < 0)
+        return PRO_TK_GENERAL_ERROR;
+
+    status = ProDimensionPrefixSet(dim, new_prefix);
+    /* ⚠ 不打印 old_prefix 本身：HLog 的 %ls 遇到空宽串会吃掉行尾换行，
+       导致这条日志和下一行黏在一起（之前踩过）。只打长度。 */
+    HLog("HKeyDimMark: id=%d old_len=%d set -> %d\n",
+         dim->id, (int)wcslen(old_prefix), (int)status);
+    return status;
+}
+
+/* 去标记：删掉前缀里所有 ★，剩下的字符原样保留。
+   *had 输出 1 表示确实有 ★ 被删掉。 */
+static ProError HKeyDimUnmark(ProDimension *dim, int *had)
+{
+    ProLine  old_prefix;
+    ProLine  new_prefix;
+    ProError status;
+    int      i, k = 0;
+
+    *had = 0;
+    old_prefix[0] = L'\0';
+
+    status = ProDimensionPrefixGet(dim, old_prefix);
+    if (status != PRO_TK_NO_ERROR)
+        old_prefix[0] = L'\0';         /* 根本没前缀 -> 自然也没标记 */
+
+    if (wcsstr(old_prefix, KEYDIM_MARK) == NULL)
+    {
+        HLog("HKeyDimUnmark: id=%d no mark, skip\n", dim->id);
+        return PRO_TK_NO_ERROR;
+    }
+
+    for (i = 0; old_prefix[i] != L'\0' && k < PRO_LINE_SIZE - 1; i++)
+    {
+        if (old_prefix[i] == KEYDIM_MARK[0])
+            continue;                  /* 扔掉这一个 ★ */
+        new_prefix[k++] = old_prefix[i];
+    }
+    new_prefix[k] = L'\0';
+
+    *had = 1;
+    status = ProDimensionPrefixSet(dim, new_prefix);
+    HLog("HKeyDimUnmark: id=%d old_len=%d new_len=%d set -> %d\n",
+         dim->id, (int)wcslen(old_prefix), k, (int)status);
+    return status;
+}
+
+/* 两个命令共用的主循环。mode = KEYDIM_ADD / KEYDIM_CLEAR */
+static int HKeyDimRun(int mode)
+{
+    ProError              status;
+    ProMdl                drawing;
+    ProSelection         *sels = NULL;
+    int                   n_sels = 0;
+    ProSelectionEnvOption env_opts[3];
+    ProSelectionEnv       sel_env = NULL;
+    ProDimension          dim;
+    ProView               view = NULL;
+    int                   n_done = 0, n_noop = 0, n_fail = 0;
+
+    char *msg_pick   = (mode == KEYDIM_ADD) ? "KEYDIM_PICK"    : "KEYDIMC_PICK";
+    char *msg_done   = (mode == KEYDIM_ADD) ? "KEYDIM_APPLIED" : "KEYDIMC_CLEARED";
+    char *msg_noop   = (mode == KEYDIM_ADD) ? "KEYDIM_ALREADY" : "KEYDIMC_NOMARK";
+    char *msg_fail   = (mode == KEYDIM_ADD) ? "KEYDIM_FAIL"    : "KEYDIMC_FAIL";
+    char *msg_ok     = (mode == KEYDIM_ADD) ? "KEYDIM_OK"      : "KEYDIMC_OK";
+    char *msg_cancel = (mode == KEYDIM_ADD) ? "KEYDIM_CANCEL"  : "KEYDIMC_CANCEL";
+
+    status = HGetDrawing(&drawing);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HLog("HKeyDimRun: not a drawing -> %d\n", (int)status);
+        HMsg("BALLOON_NO_DRAWING");
+        return 0;
+    }
+
+    env_opts[0].attribute = PRO_SELECT_DONE_REQUIRED;    env_opts[0].value = 0;
+    env_opts[1].attribute = PRO_SELECT_BY_MENU_ALLOWED;  env_opts[1].value = 1;
+    env_opts[2].attribute = PRO_SELECT_BY_BOX_ALLOWED;   env_opts[2].value = 0;
+    status = ProSelectionEnvAlloc(env_opts, 3, &sel_env);
+    HLog("HKeyDimRun: mode=%d SelectionEnvAlloc -> %d\n", mode, (int)status);
+
+    HMsg(msg_pick);
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    for (;;)
+    {
+        int flag = 0;
+
+        sels = NULL; n_sels = 0;
+        status = ProSelect((char*)"dimension", 1, NULL, NULL, sel_env, NULL,
+                           &sels, &n_sels);
+        if (status != PRO_TK_NO_ERROR || n_sels < 1 || sels == NULL)
+        {
+            HLog("HKeyDimRun: selection ended -> stop\n");
+            break;
+        }
+
+        status = ProSelectionModelitemGet(sels[0], &dim);
+
+        /* 顺手取尺寸所在视图：改完要重生成该视图，显示列表才会重算 */
+        view = NULL;
+        ProSelectionViewGet(sels[0], &view);
+
+        sels = NULL;   /* ★ Creo 的静态内存，只清指针，绝不 ProSelectionarrayFree */
+
+        if (status != PRO_TK_NO_ERROR || dim.type != PRO_DIMENSION)
+        {
+            n_fail++;
+            HLog("HKeyDimRun: not a dimension -> skip\n");
+            HMsg("KEYDIM_NOT_DIM");
+            continue;
+        }
+
+        if (mode == KEYDIM_ADD)
+            status = HKeyDimMark(&dim, &flag);
+        else
+            status = HKeyDimUnmark(&dim, &flag);
+
+        if (status != PRO_TK_NO_ERROR)
+        {
+            n_fail++;
+            HLog("HKeyDimRun: dim id=%d -> %d (reference/driven?)\n",
+                 dim.id, (int)status);
+            HMsg(msg_fail);
+        }
+        else if (flag)
+        {
+            n_done++;
+            HMsg(msg_done);
+        }
+        else
+        {
+            n_noop++;
+            HMsg(msg_noop);
+        }
+
+        /* 刷新链：重生成视图 -> Repaint -> Refresh（和公差刷子完全一致） */
+        if (view != NULL)
+        {
+            status = ProDrawingViewRegenerate((ProDrawing)drawing, view);
+            HLog("HKeyDimRun: view regenerate -> %d\n", (int)status);
+        }
+        ProWindowRepaint(PRO_VALUE_UNUSED);
+        ProWindowRefresh(PRO_VALUE_UNUSED);
+    }
+
+    if (sel_env) { ProSelectionEnvFree(sel_env); sel_env = NULL; }
+
+    HLog("HKeyDimRun: mode=%d done, changed=%d skipped=%d failed=%d\n",
+         mode, n_done, n_noop, n_fail);
+    if (n_done > 0) HMsg(msg_ok);
+    else            HMsg(msg_cancel);
+    return 0;
+}
+
+static int HKeyDimAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
+{
+    (void)command; (void)p_value; (void)p_push_command_data;
+    return HKeyDimRun(KEYDIM_ADD);
+}
+
+static int HKeyDimClearAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
+{
+    (void)command; (void)p_value; (void)p_push_command_data;
+    return HKeyDimRun(KEYDIM_CLEAR);
+}
+
+#define TPL_FOLDER L"templates"
+#define TPL_SUBDIR L"技术要求"
+
+/*---------------------------------------------------------------------*\
+  技术要求：从模板文件夹里挑一个 .txt，整段作为【一条注解】放到图纸上
+
+  交互：点按钮 -> Creo 原生文件浏览器（一开始就停在
+        <插件目录>\templates\技术要求）-> 选一个 .txt
+        -> 提示「点击放置位置」-> 左键落点，整段文字成为一条注解
+
+  ★ 注解 API 全部照官方 pt_userguide\ptu_dwg\UgNoteCreate.c：
+      ProDtlnotedataAlloc -> 每行一个 ProDtlnoteline（行内挂一个 ProDtlnotetext）
+      -> ProDtlnotedataColorSet -> ProDtlnotedataAttachmentSet(PRO_DTLATTACHTYPE_FREE)
+      -> ProDtlnoteCreate(drawing, NULL, notedata, &note) -> ProDtlnoteShow
+    多行 = 反复 ProDtlnotedataLineAdd（官方只演示一行，多行是同一套接口）。
+  ★ 字高：先 ProSolidDefaulttextheightGet 取默认字高，再除以图纸变换矩阵的
+    [0][0] 做单位换算（官方同一个写法）。不这样做，不同比例图纸上字会忽大忽小。
+  ★ PRO_LINE_SIZE = 81（ProSizeConst.h:19）=> 每行最多 80 个宽字符，超出截断。
+  ★ 文件编码：UTF-8 BOM > 合法 UTF-8 > 系统 ANSI(GBK)
+    —— 记事本「UTF-8」和「ANSI」两种保存方式都能读。
+  ★ 放置点和球标共用 HPickPlacePoint（ProMousePickGet），
+    拾取期间滚轮/切命令都是活的，见那段注释。
+\*---------------------------------------------------------------------*/
+
+static void HPluginDirW(ProPath out)
+{
+    HMODULE hm = NULL;
+
+    out[0] = L'\0';
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)&HPluginDirW, &hm))
+    {
+        DWORD n = GetModuleFileNameW(hm, out, PRO_PATH_SIZE);
+        if (n == 0 || n >= PRO_PATH_SIZE)
+        {
+            out[0] = L'\0';
+            return;
+        }
+    }
+    {
+        wchar_t *p = wcsrchr(out, L'\\');
+        if (p != NULL)
+            *p = L'\0';
+    }
+}
+
+/* 模板目录 = <插件目录>\templates\技术要求，缺哪层建哪层 */
+static void HTplDirW(ProPath out)
+{
+    ProPath base;
+
+    HPluginDirW(base);
+    if (base[0] == L'\0')
+        wcscpy_s(base, PRO_PATH_SIZE, L".");
+
+    swprintf_s(out, PRO_PATH_SIZE, L"%s\\%s", base, TPL_FOLDER);
+    CreateDirectoryW(out, NULL);            /* 已存在时返回失败，忽略 */
+
+    wcsncat_s(out, PRO_PATH_SIZE, L"\\", 1);
+    wcsncat_s(out, PRO_PATH_SIZE, TPL_SUBDIR, _TRUNCATE);
+    CreateDirectoryW(out, NULL);
+}
+
+/* 读模板 -> 按行切成宽字符行（lines 由调用方提供，容量 maxlines）
+   返回行数；<=0 表示读失败或空文件 */
+static int HReadTplLinesW(const wchar_t *path, ProLine *lines, int maxlines)
+{
+    HANDLE   h;
+    DWORD    got  = 0;
+    char    *buf  = NULL;
+    wchar_t *wb   = NULL;
+    int      size, wlen, i, n = 0, off = 0, cp = CP_UTF8;
+    BOOL     utf8_bom = FALSE;
+
+    h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+    {
+        HLog("HReadTplLinesW: open failed (%lu)\n", (unsigned long)GetLastError());
+        return -1;
+    }
+
+    size = (int)GetFileSize(h, NULL);
+    if (size <= 0 || size > 256 * 1024)
+    {
+        HLog("HReadTplLinesW: bad size %d\n", size);
+        CloseHandle(h);
+        return -1;
+    }
+
+    buf = (char *)malloc(size + 1);
+    if (buf == NULL) { CloseHandle(h); return -1; }
+    if (!ReadFile(h, buf, (DWORD)size, &got, NULL)) got = 0;
+    CloseHandle(h);
+    buf[(int)got] = '\0';
+    if (got < 1) { free(buf); return -1; }
+
+    if (got >= 3 && (unsigned char)buf[0] == 0xEF &&
+        (unsigned char)buf[1] == 0xBB && (unsigned char)buf[2] == 0xBF)
+    {
+        utf8_bom = TRUE;
+        off = 3;
+    }
+    if (!utf8_bom)
+    {
+        /* 严格试 UTF-8；不合法就按系统代码页（中文 Windows = GBK）解释 */
+        if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                buf + off, -1, NULL, 0) <= 0)
+            cp = CP_ACP;
+    }
+
+    wlen = MultiByteToWideChar(cp, 0, buf + off, -1, NULL, 0);
+    if (wlen <= 1) { free(buf); return -1; }
+
+    wb = (wchar_t *)malloc((wlen + 1) * sizeof(wchar_t));
+    if (wb == NULL) { free(buf); return -1; }
+    MultiByteToWideChar(cp, 0, buf + off, -1, wb, wlen + 1);
+    free(buf);
+    wlen--;                                  /* 去掉结尾 \0 的计数 */
+
+    i = 0;
+    while (i < wlen && n < maxlines)
+    {
+        int k = 0;
+
+        while (i < wlen && wb[i] != L'\r' && wb[i] != L'\n')
+        {
+            if (k < PRO_LINE_SIZE - 1)
+                lines[n][k++] = wb[i];
+            i++;
+        }
+        while (k > 0 && (lines[n][k - 1] == L' ' || lines[n][k - 1] == L'\t'))
+            k--;
+        lines[n][k] = L'\0';
+        if (k == 0)
+            wcscpy_s(lines[n], PRO_LINE_SIZE, L" ");   /* 空行留一行高，保住排版 */
+        n++;
+
+        if (i < wlen && wb[i] == L'\r') i++;
+        if (i < wlen && wb[i] == L'\n') i++;
+    }
+    free(wb);
+
+    while (n > 1 && lines[n - 1][0] == L' ')      /* 去掉文件末尾的空行 */
+        n--;
+
+    HLog("HReadTplLinesW: cp=%d bom=%d lines=%d\n", cp, (int)utf8_bom, n);
+    return n;
+}
+
+/* 把 lines[0..n) 建成一条注解，FREE 挂在 point 处 */
+static ProError HCreateNoteFromLines(ProMdl drawing, ProView over_view,
+                                     ProVector point, ProLine *lines, int n)
+{
+    ProDtlnotedata notedata = NULL;
+    ProDtlattach   attach   = NULL;
+    ProDtlnote     note;
+    ProColor       color;
+    double         height = 2.5;
+    ProError       sub;
+    int            i, sheet;
+
+    if (ProDtlnotedataAlloc(drawing, &notedata) != PRO_TK_NO_ERROR)
+    {
+        HLog("HCreateNoteFromLines: [1] dataAlloc FAILED\n");
+        return PRO_TK_GENERAL_ERROR;
+    }
+
+    /* 默认字高 + 图纸变换单位换算（官方 UgNoteCreate.c 同款） */
+    {
+        double    h_def = 0.0;
+        ProMatrix m;
+        ProName   w_size;
+
+        if (ProSolidDefaulttextheightGet((ProSolid)drawing, &h_def) == PRO_TK_NO_ERROR
+            && h_def > 0.0
+            && ProDrawingCurrentSheetGet((ProDrawing)drawing, &sheet) == PRO_TK_NO_ERROR
+            && ProDrawingSheetTrfGet((ProDrawing)drawing, sheet, w_size, m) == PRO_TK_NO_ERROR
+            && m[0][0] > 0.0)
+        {
+            height = h_def / m[0][0];
+        }
+        HLog("HCreateNoteFromLines: default height=%.4f -> %.4f\n", h_def, height);
+    }
+
+    for (i = 0; i < n; i++)
+    {
+        ProDtlnoteline line = NULL;
+        ProDtlnotetext text = NULL;
+
+        if (ProDtlnotelineAlloc(&line) != PRO_TK_NO_ERROR ||
+            ProDtlnotetextAlloc(&text) != PRO_TK_NO_ERROR)
+        {
+            HLog("HCreateNoteFromLines: [2] line/text alloc FAILED at %d\n", i);
+            ProDtlnotedataFree(notedata);
+            return PRO_TK_GENERAL_ERROR;
+        }
+        ProDtlnotetextHeightSet(text, height);
+        ProDtlnotetextWidthSet(text, 0.8);
+        ProDtlnotetextSlantSet(text, 0.0);
+        ProDtlnotetextThicknessSet(text, 0.0);
+        ProDtlnotetextStringSet(text, lines[i]);
+        ProDtlnotelineTextAdd(line, text);
+        ProDtlnotedataLineAdd(notedata, line);
+    }
+
+    color.method     = PRO_COLOR_METHOD_TYPE;
+    color.value.type = PRO_COLOR_LETTER;
+    ProDtlnotedataColorSet(notedata, &color);
+
+    sub = ProDtlattachAlloc(PRO_DTLATTACHTYPE_FREE, over_view, point, NULL, &attach);
+    if (sub != PRO_TK_NO_ERROR)
+    {
+        HLog("HCreateNoteFromLines: [3] attachAlloc -> %d FAILED\n", (int)sub);
+        ProDtlnotedataFree(notedata);
+        return sub;
+    }
+    ProDtlnotedataAttachmentSet(notedata, attach);
+    /* ★ 这里【不要】ProDtlattachFree：官方 UgNoteCreate.c:239-240 同样不释放，
+       释放后 notedata 里可能留着悬挂指针 -> 建注解时崩。一次性的小泄漏无妨。 */
+
+    sub = ProDtlnoteCreate(drawing, NULL, notedata, &note);
+    ProDtlnotedataFree(notedata);
+    if (sub != PRO_TK_NO_ERROR)
+    {
+        HLog("HCreateNoteFromLines: [4] noteCreate -> %d FAILED\n", (int)sub);
+        return sub;
+    }
+
+    sub = ProDtlnoteShow(&note);
+    HLog("HCreateNoteFromLines: noteCreate OK, show -> %d, %d lines\n",
+         (int)sub, n);
+    ProDrawingtreeRefresh((ProDrawing)drawing, PRO_VALUE_UNUSED);
+    return PRO_TK_NO_ERROR;
+}
+
+static int HTechReqAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
+{
+    ProError  status;
+    ProMdl    drawing;
+    ProPath   tpl_dir, sel;
+    ProView   over_view;
+    ProVector point;
+    int       sheet, nlines;
+    static ProLine lines[64];
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    status = HGetDrawing(&drawing);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HLog("HTechReqAct: not a drawing -> %d\n", (int)status);
+        HMsg("TECHREQ_NO_DRAWING");
+        return 0;
+    }
+
+    HTplDirW(tpl_dir);
+    HLog("HTechReqAct: template dir = %ls\n", tpl_dir);
+
+    sel[0] = L'\0';
+    status = ProFileMdlnameOpen(L"选择技术要求模板", L"*.txt", NULL, NULL,
+                                tpl_dir, NULL, sel);
+    HLog("HTechReqAct: file open -> %d\n", (int)status);
+    if (status == PRO_TK_USER_ABORT)
+        return 0;                          /* 用户取消：安静退出 */
+    if (status != PRO_TK_NO_ERROR)
+    {
+        /* ★ 兜底：个别版本/环境可能不接受 *.txt 过滤器（把 txt 当非法扩展名），
+           这时退回「显示所有文件」再问一次，别让整个功能不可用。 */
+        HLog("HTechReqAct: retry browser without filter\n");
+        status = ProFileMdlnameOpen(L"选择技术要求模板", L"", NULL, NULL,
+                                    tpl_dir, NULL, sel);
+        HLog("HTechReqAct: file open (no filter) -> %d\n", (int)status);
+        if (status == PRO_TK_USER_ABORT)
+            return 0;
+        if (status != PRO_TK_NO_ERROR)
+        {
+            HMsg("TECHREQ_NO_TEMPLATE");
+            return 0;
+        }
+    }
+
+    nlines = HReadTplLinesW(sel, lines, 64);
+    if (nlines <= 0)
+    {
+        HMsg("TECHREQ_EMPTY");
+        return 0;
+    }
+
+    ProDrawingCurrentSheetGet((ProDrawing)drawing, &sheet);
+    ProDrawingBackgroundViewGet((ProDrawing)drawing, sheet, &over_view);
+
+    HMsg("TECHREQ_ASK");
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    if (HPickPlacePoint(-1, point) != PRO_TK_NO_ERROR)
+    {
+        HLog("HTechReqAct: placement cancelled\n");
+        HMsg("TECHREQ_CANCEL");
+        return 0;
+    }
+
+    if (HCreateNoteFromLines(drawing, over_view, point, lines, nlines)
+        != PRO_TK_NO_ERROR)
+    {
+        HMsg("TECHREQ_FAILED");
+        return 0;
+    }
+
+    ProDwgSheetRegenerate((ProDrawing)drawing, sheet);
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    ProWindowRefresh(PRO_VALUE_UNUSED);
+    HMsg("TECHREQ_OK");
+    return 0;
+}
+
+/*---------------------------------------------------------------------*\
+  会话：打开工作目录 / 设置工作目录 / 打开模型目录 / 模型转目录
+        / 批量删旧版 / 删除闲置模型 / 清理垃圾
+
+  ★ 除「删除闲置模型」外全是 Win32 文件操作（ShellExecuteW /
+    FindFirstFileW / DeleteFileW），路径一律宽字符 —— 中文目录安全。
+    窄字符文件 API 在中文路径下会静默失败（一键导出踩过同样的坑）。
+
+  ★ 危险动作（批量删旧版 / 清理垃圾）【先扫描、再要用户确认】：
+    确认走消息行输入（ProMessageStringRead），必须输入 Y 才动手，
+    直接回车 = 取消。绝不静默删除用户的文件。
+
+  ★ 删除范围严格限定在【当前工作目录】+【白名单扩展名】：
+    · 删旧版只认 .prt/.asm/.drw/.frm/.sec/.lay/.mfg 的「.数字」后缀，
+      且必须同目录存在同名的无编号文件才删（否则那份编号文件是唯一副本）；
+    · 清理垃圾只删 .err/.out/.inf/.idx/.xpr/.bak/.dwl/.m_p/.lst/.tst。
+\*---------------------------------------------------------------------*/
+
+/* 用资源管理器打开目录或文件。ShellExecuteW 返回值 > 32 才算成功。 */
+static int HShellOpenW(const wchar_t *path)
+{
+    INT_PTR r;
+
+    if (path == NULL || path[0] == L'\0')
+        return -1;
+    r = (INT_PTR)ShellExecuteW(NULL, L"open", path, NULL, NULL, SW_SHOWNORMAL);
+    HLog("HShellOpenW -> %ld\n", (long)r);
+    return (r > 32) ? 0 : -1;
+}
+
+/* 就地把 path 截成它的目录部分 */
+static void HDirOfW(wchar_t *path)
+{
+    wchar_t *p, *last = NULL;
+
+    for (p = path; *p != L'\0'; p++)
+        if (*p == L'\\' || *p == L'/')
+            last = p;
+    if (last != NULL && last != path)
+        *last = L'\0';
+}
+
+/* 消息行二选一确认：返回 1 = 用户输入了 Y/y，0 = 其它（含 Esc / 空回车） */
+static int HConfirmYes(const char *ask_key)
+{
+    wchar_t ans[PRO_LINE_SIZE];
+    ProError status;
+
+    HMsg((char *)ask_key);
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    ans[0] = L'\0';
+    status = ProMessageStringRead(PRO_LINE_SIZE - 1, ans);
+    ProMessageClear();
+    HLog("HConfirmYes: read -> %d, first=%d\n", (int)status, (int)ans[0]);
+
+    if (status != PRO_TK_NO_ERROR)
+        return 0;
+    return (ans[0] == L'Y' || ans[0] == L'y') ? 1 : 0;
+}
+
+/* ★ ProName 是 wchar_t[PRO_NAME_SIZE]（ProSizeConst.h:65），不是窄字符 ——
+   ProDirectoryChoose 的对话框标签直接给 L"" 宽串即可，不需要转码。 */
+
+static int HInListW(const wchar_t *ext, const wchar_t **list, int n)
+{
+    int i;
+
+    for (i = 0; i < n; i++)
+        if (_wcsicmp(ext, list[i]) == 0)
+            return 1;
+    return 0;
+}
+
+/* 从文件名里拆出「.ext」部分（最后一个点之后）。放不下返回 -1。 */
+static int HExtOfW(const wchar_t *name, wchar_t *ext, int cap)
+{
+    const wchar_t *dot = NULL, *p;
+    size_t        n;
+
+    for (p = name; *p != L'\0'; p++)
+        if (*p == L'.')
+            dot = p;
+    if (dot == NULL || dot == name)
+        return -1;
+    n = wcslen(dot + 1);
+    if (n == 0 || (int)n >= cap)
+        return -1;
+    wmemcpy(ext, dot + 1, n);
+    ext[n] = L'\0';
+    return 0;
+}
+
+/*--------------------------------------------------------------------*\
+  批量删旧版：扫 dir，找 name.ext.N（N 全数字，ext 在白名单里），
+  且同目录存在 name.ext，才算旧版本。do_delete=0 只统计。
+  返回命中数（删除模式返回命中数，不代表全部删成功，失败会记日志）。
+\*--------------------------------------------------------------------*/
+static int HPurgeDirW(const wchar_t *dir, int do_delete)
+{
+    static const wchar_t *ok_ext[] = { L"prt", L"asm", L"drw", L"frm",
+                                       L"sec", L"lay", L"mfg" };
+    wchar_t         pat[PRO_PATH_SIZE], full[PRO_PATH_SIZE], base[PRO_PATH_SIZE];
+    wchar_t         ext[32];
+    WIN32_FIND_DATAW fd;
+    HANDLE          h;
+    wchar_t        *d1, *d2, *p;
+    int             n = 0, len;
+
+    if (HPathJoinW(pat, PRO_PATH_SIZE, dir, L"*", L".*") != 0)
+        return 0;
+
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+    {
+        HLog("HPurgeDirW: nothing matched\n");
+        return 0;
+    }
+
+    do
+    {
+        const wchar_t *name = fd.cFileName;
+
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+
+        /* 从右往左找最后两个点： name . ext . ver */
+        d2 = NULL;
+        d1 = NULL;
+        for (p = (wchar_t *)name; *p != L'\0'; p++)
+            if (*p == L'.') { d1 = d2; d2 = p; }
+        if (d1 == NULL || d2 == NULL || d1 == d2)
+            continue;
+
+        /* d2 之后必须全是数字，且至少一位 */
+        for (p = d2 + 1; *p != L'\0'; p++)
+            if (*p < L'0' || *p > L'9')
+                break;
+        if (*p != L'\0' || p == d2 + 1)
+            continue;
+
+        /* 扩展名白名单 */
+        len = (int)(d2 - d1 - 1);
+        if (len <= 0 || len >= 32)
+            continue;
+        wmemcpy(ext, d1 + 1, (size_t)len);
+        ext[len] = L'\0';
+        if (!HInListW(ext, ok_ext, (int)(sizeof(ok_ext) / sizeof(ok_ext[0]))))
+            continue;
+
+        /* 基础名（含扩展名、去掉 .N）必须在同目录存在 */
+        len = (int)(d1 - name);
+        if (len <= 0 || len >= PRO_PATH_SIZE - 1)
+            continue;
+        wmemcpy(base, name, (size_t)len);
+        base[len] = L'\0';
+        if (HPathJoinW(full, PRO_PATH_SIZE, dir, base, L"") != 0)
+            continue;
+        if (!HFileExistsW(full))
+        {
+            HLogW("HPurgeDirW: skip (no base file) ", name);
+            continue;
+        }
+
+        n++;
+        if (!do_delete)
+            continue;
+
+        if (HPathJoinW(full, PRO_PATH_SIZE, dir, name, L"") != 0)
+            continue;
+        if (DeleteFileW(full))
+            HLogW("HPurgeDirW: purged ", full);
+        else
+            HLog("HPurgeDirW: delete FAILED err=%lu\n",
+                 (unsigned long)GetLastError());
+    } while (FindNextFileW(h, &fd));
+
+    FindClose(h);
+    HLog("HPurgeDirW: %s %d file(s)\n", do_delete ? "deleted" : "found", n);
+    return n;
+}
+
+/*--------------------------------------------------------------------*\
+  清理垃圾：只删白名单里的临时文件扩展名，不碰模型 / 图纸 / 任何其它文件。
+\*--------------------------------------------------------------------*/
+static int HCleanDirW(const wchar_t *dir, int do_delete)
+{
+    static const wchar_t *ok_ext[] = { L"err", L"out", L"inf", L"idx", L"xpr",
+                                       L"bak", L"dwl", L"m_p", L"lst", L"tst" };
+    wchar_t         pat[PRO_PATH_SIZE], full[PRO_PATH_SIZE], ext[32];
+    WIN32_FIND_DATAW fd;
+    HANDLE          h;
+    int             n = 0;
+
+    if (HPathJoinW(pat, PRO_PATH_SIZE, dir, L"*", L".*") != 0)
+        return 0;
+
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+    {
+        HLog("HCleanDirW: nothing matched\n");
+        return 0;
+    }
+
+    do
+    {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        if (HExtOfW(fd.cFileName, ext, 32) != 0)
+            continue;
+        if (!HInListW(ext, ok_ext, (int)(sizeof(ok_ext) / sizeof(ok_ext[0]))))
+            continue;
+
+        n++;
+        if (!do_delete)
+            continue;
+        if (HPathJoinW(full, PRO_PATH_SIZE, dir, fd.cFileName, L"") != 0)
+            continue;
+        if (DeleteFileW(full))
+            HLogW("HCleanDirW: removed ", full);
+        else
+            HLog("HCleanDirW: delete FAILED err=%lu\n",
+                 (unsigned long)GetLastError());
+    } while (FindNextFileW(h, &fd));
+
+    FindClose(h);
+    HLog("HCleanDirW: %s %d file(s)\n", do_delete ? "removed" : "found", n);
+    return n;
+}
+
+/* 打开工作目录（资源管理器） */
+static int HOpenWorkDirAct(uiCmdCmdId command, uiCmdValue *p_value,
+                           void *p_push_command_data)
+{
+    ProPath dir;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    dir[0] = L'\0';
+    if (ProDirectoryCurrentGet(dir) != PRO_TK_NO_ERROR || dir[0] == L'\0')
+    {
+        HMsg("SESSION_NO_WORKDIR");
+        return 0;
+    }
+    HLogW("HOpenWorkDirAct: dir = ", dir);
+
+    if (HShellOpenW(dir) != 0)
+    {
+        HMsg("SESSION_OPEN_FAIL");
+        return 0;
+    }
+    HMsg("SESSION_WORKDIR_OPENED");
+    return 0;
+}
+
+/* 设置工作目录 */
+static int HSetWorkDirAct(uiCmdCmdId command, uiCmdValue *p_value,
+                          void *p_push_command_data)
+{
+    ProPath   sel;
+    ProError  status;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    sel[0] = L'\0';
+    status = ProDirectoryChoose(L"设置工作目录", NULL, NULL, NULL, sel);
+    HLog("HSetWorkDirAct: choose -> %d\n", (int)status);
+    if (status == PRO_TK_USER_ABORT)
+        return 0;
+    if (status != PRO_TK_NO_ERROR || sel[0] == L'\0')
+    {
+        HMsg("SESSION_SETDIR_FAIL");
+        return 0;
+    }
+    HLogW("HSetWorkDirAct: picked = ", sel);
+
+    status = ProDirectoryChange(sel);
+    HLog("HSetWorkDirAct: change -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("SESSION_SETDIR_FAIL");
+        return 0;
+    }
+    HMsg("SESSION_SETDIR_OK");
+    return 0;
+}
+
+/* 打开当前模型所在目录 */
+static int HOpenMdlDirAct(uiCmdCmdId command, uiCmdValue *p_value,
+                          void *p_push_command_data)
+{
+    ProMdl    mdl;
+    ProMdldata data;
+    wchar_t   path[PRO_PATH_SIZE];
+    ProError  status;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    status = ProMdlCurrentGet(&mdl);
+    if (status != PRO_TK_NO_ERROR || mdl == NULL)
+    {
+        HLog("HOpenMdlDirAct: no current model -> %d\n", (int)status);
+        HMsg("SESSION_NO_MDL");
+        return 0;
+    }
+
+    memset(&data, 0, sizeof(data));
+    status = ProMdlDataGet(mdl, &data);
+    HLog("HOpenMdlDirAct: dataGet -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("SESSION_NO_MDL");
+        return 0;
+    }
+
+    wcsncpy(path, data.path, (size_t)PRO_PATH_SIZE - 1);
+    path[PRO_PATH_SIZE - 1] = L'\0';
+    HLogW("HOpenMdlDirAct: model path = ", path);
+
+    HDirOfW(path);
+    if (path[0] == L'\0' || HShellOpenW(path) != 0)
+    {
+        HMsg("SESSION_OPEN_FAIL");
+        return 0;
+    }
+    HMsg("SESSION_MDLDIR_OPENED");
+    return 0;
+}
+
+/* 模型转目录：把会话里所有零件/装配/工程图备份到选定目录 */
+static int HMdlToDirAct(uiCmdCmdId command, uiCmdValue *p_value,
+                        void *p_push_command_data)
+{
+    ProPath    sel;
+    ProError   status;
+    ProMdlType types[3];
+    int        t, i, n, ok = 0, fail = 0;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    sel[0] = L'\0';
+    status = ProDirectoryChoose(L"选择目标目录", NULL, NULL, NULL, sel);
+    HLog("HMdlToDirAct: choose -> %d\n", (int)status);
+    if (status == PRO_TK_USER_ABORT)
+        return 0;
+    if (status != PRO_TK_NO_ERROR || sel[0] == L'\0')
+    {
+        HMsg("SESSION_SETDIR_FAIL");
+        return 0;
+    }
+    HLogW("HMdlToDirAct: target = ", sel);
+
+    types[0] = PRO_MDL_PART;
+    types[1] = PRO_MDL_ASSEMBLY;
+    types[2] = PRO_MDL_DRAWING;
+
+    for (t = 0; t < 3; t++)
+    {
+        ProMdl *arr = NULL;
+
+        n = 0;
+        status = ProSessionMdlList(types[t], &arr, &n);
+        HLog("HMdlToDirAct: list type=%d -> %d, n=%d\n", (int)types[t],
+             (int)status, n);
+        if (status != PRO_TK_NO_ERROR || arr == NULL || n <= 0)
+        {
+            if (arr != NULL)
+                ProArrayFree((ProArray *)&arr);
+            continue;
+        }
+
+        for (i = 0; i < n; i++)
+        {
+            status = ProMdlnameBackup(arr[i], sel);
+            HLog("HMdlToDirAct: backup #%d type=%d -> %d\n", i,
+                 (int)types[t], (int)status);
+            if (status == PRO_TK_NO_ERROR)
+                ok++;
+            else
+                fail++;
+        }
+        ProArrayFree((ProArray *)&arr);
+    }
+
+    HLog("HMdlToDirAct: ok=%d fail=%d\n", ok, fail);
+    if (ok <= 0 && fail <= 0)
+    {
+        HMsg("SESSION_NO_MDL");
+        return 0;
+    }
+    if (ok > 0)
+        HMsg("SESSION_BACKUP_OK");
+    else
+        HMsg("SESSION_BACKUP_FAIL");
+    return 0;
+}
+
+/* 批量删旧版 */
+static int HPurgeOldAct(uiCmdCmdId command, uiCmdValue *p_value,
+                        void *p_push_command_data)
+{
+    ProPath dir;
+    int     n;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    dir[0] = L'\0';
+    if (ProDirectoryCurrentGet(dir) != PRO_TK_NO_ERROR || dir[0] == L'\0')
+    {
+        HMsg("SESSION_NO_WORKDIR");
+        return 0;
+    }
+    HLogW("HPurgeOldAct: dir = ", dir);
+
+    n = HPurgeDirW(dir, 0);
+    HLog("HPurgeOldAct: scan n=%d\n", n);
+    if (n <= 0)
+    {
+        HMsg("SESSION_PURGE_NONE");
+        return 0;
+    }
+
+    if (!HConfirmYes("SESSION_PURGE_ASK"))
+    {
+        HMsg("SESSION_CANCEL");
+        return 0;
+    }
+
+    n = HPurgeDirW(dir, 1);
+    HLog("HPurgeOldAct: deleted n=%d\n", n);
+    HMsg("SESSION_PURGE_OK");
+    return 0;
+}
+
+/* 删除闲置模型（没显示在任何窗口里的） */
+static int HEraseIdleAct(uiCmdCmdId command, uiCmdValue *p_value,
+                         void *p_push_command_data)
+{
+    ProError status;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    status = ProMdlEraseNotDisplayed();
+    HLog("HEraseIdleAct: erase -> %d\n", (int)status);
+
+    if (status == PRO_TK_NO_ERROR)
+        HMsg("SESSION_ERASE_OK");
+    else if (status == PRO_TK_E_BUSY)
+        HMsg("SESSION_BUSY");
+    else
+        HMsg("SESSION_ERASE_FAIL");
+    return 0;
+}
+
+/* 清理垃圾临时文件 */
+static int HCleanJunkAct(uiCmdCmdId command, uiCmdValue *p_value,
+                         void *p_push_command_data)
+{
+    ProPath dir;
+    int     n;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    dir[0] = L'\0';
+    if (ProDirectoryCurrentGet(dir) != PRO_TK_NO_ERROR || dir[0] == L'\0')
+    {
+        HMsg("SESSION_NO_WORKDIR");
+        return 0;
+    }
+    HLogW("HCleanJunkAct: dir = ", dir);
+
+    n = HCleanDirW(dir, 0);
+    HLog("HCleanJunkAct: scan n=%d\n", n);
+    if (n <= 0)
+    {
+        HMsg("SESSION_CLEAN_NONE");
+        return 0;
+    }
+
+    if (!HConfirmYes("SESSION_CLEAN_ASK"))
+    {
+        HMsg("SESSION_CANCEL");
+        return 0;
+    }
+
+    n = HCleanDirW(dir, 1);
+    HLog("HCleanJunkAct: removed n=%d\n", n);
+    HMsg("SESSION_CLEAN_OK");
+    return 0;
+}
+
+/*---------------------------------------------------------------------*\
+  绘图比例：1:1 大按钮 + 6 个小的 + 「更多比例」下拉 + 「自定义比例」
+
+  ★ 比例是【图纸级】的，走 ProDrawingScaleSet(drawing, NULL, -1, scale)：
+      第 2 参 solid 传 NULL = 用图纸的默认模型（ProDrawing.h 原文）；
+      第 3 参 sheet 传 -1 = 当前图纸。
+    Creo 的 scale 定义是「图上长度 / 实物长度」，所以 1:3 传 1.0/3.0、
+    2.5:1 传 2.5。
+
+  ★ 改完必须 ProDwgSheetRegenerate 重建该图纸的显示列表 —— 只 Repaint
+    等于「只擦屏不重算」，视图不会重新缩放（公差刷子踩过同一个坑）。
+    该 API 要求目标图纸正显示在窗口里，传 ProDrawingCurrentSheetGet 拿到的
+    当前图纸号即可满足。
+
+  ★ 视图若自己设过「自定义比例」(ProDrawingViewScaleIsUserdefined 为真)，
+    图纸比例改了它也不会跟着变 —— 这是 Creo 原生行为，不是本命令的问题。
+
+  ★ 所有固定档位共用一个 HScaleAct：action 回调第一个参数就是 uiCmdCmdId
+    （ProUICmd.h:134 uiCmdCmdActFn 签名），拿它反查下标即可。
+
+  ★ 自定义比例走消息行输入（ProMessageStringRead），不用 ProUIDialog + .res
+    对话框：少一个资源文件、少一类编码风险，和一键导出问文件名同一套交互。
+\*---------------------------------------------------------------------*/
+typedef struct
+{
+    const char *name;   /* 命令名，同时是 h_msg.txt 里的标签键 */
+    double      scale;  /* 图上长度 / 实物长度 */
+} HScaleItem;
+
+static const HScaleItem g_scale_items[] =
+{
+    /* 前 7 个 = 组里直接显示的按钮（1 大 + 6 小），顺序照 Creo 原生排法 */
+    { "H_Scale_1_1",   1.0 },
+    { "H_Scale_1_2",   0.5 },
+    { "H_Scale_1_3",   1.0 / 3.0 },
+    { "H_Scale_1_4",   0.25 },
+    { "H_Scale_2_1",   2.0 },
+    { "H_Scale_3_1",   3.0 },
+    { "H_Scale_4_1",   4.0 },
+    /* 其余 18 个由 Creo 自动收进组名下拉栏（见 rbn 注释） */
+    { "H_Scale_2_3",   2.0 / 3.0 },
+    { "H_Scale_2_5",   0.4 },
+    { "H_Scale_1_5",   0.2 },
+    { "H_Scale_1_6",   1.0 / 6.0 },
+    { "H_Scale_1_8",   0.125 },
+    { "H_Scale_1_10",  0.1 },
+    { "H_Scale_1_12",  1.0 / 12.0 },
+    { "H_Scale_1_15",  1.0 / 15.0 },
+    { "H_Scale_1_20",  0.05 },
+    { "H_Scale_3_2",   1.5 },
+    { "H_Scale_5_2",   2.5 },
+    { "H_Scale_5_1",   5.0 },
+    { "H_Scale_6_1",   6.0 },
+    { "H_Scale_8_1",   8.0 },
+    { "H_Scale_10_1",  10.0 },
+    { "H_Scale_12_1",  12.0 },
+    { "H_Scale_15_1",  15.0 },
+    { "H_Scale_20_1",  20.0 }
+};
+
+#define H_SCALE_COUNT ((int)(sizeof(g_scale_items) / sizeof(g_scale_items[0])))
+
+static uiCmdCmdId g_scale_cmd[H_SCALE_COUNT];
+static uiCmdCmdId g_scale_custom_cmd;
+
+static uiCmdAccessState HScaleAccess(uiCmdAccessMode access_mode)
+{
+    (void)access_mode;
+    return ACCESS_AVAILABLE;
+}
+
+/* 设比例 -> 写后回读 -> 重建图纸 -> 刷新。固定档位与自定义共用。 */
+static void HScaleApply(ProDrawing drw, double scale, const char *tag)
+{
+    int      sheet = 1;
+    ProError status;
+    double   old_scale = 0.0;
+
+    ProDrawingCurrentSheetGet(drw, &sheet);
+    ProDrawingScaleGet(drw, NULL, -1, &old_scale);
+
+    status = ProDrawingScaleSet(drw, NULL, -1, scale);
+    HLog("HScaleApply: %s sheet=%d  scale %.5f -> %.5f   set -> %d\n",
+         tag, sheet, old_scale, scale, (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("SCALE_FAILED");
+        return;
+    }
+
+    {
+        double chk  = 0.0;
+        double diff;
+
+        if (ProDrawingScaleGet(drw, NULL, -1, &chk) == PRO_TK_NO_ERROR)
+        {
+            diff = chk - scale;
+            if (diff < 0.0) diff = -diff;
+            HLog("HScaleApply: readback %.6f  want %.6f  VERDICT=%s\n",
+                 chk, scale, (diff < 1.0e-9) ? "WRITTEN" : "NOT-WRITTEN");
+        }
+        else
+        {
+            HLog("HScaleApply: readback FAILED\n");
+        }
+    }
+
+    status = ProDwgSheetRegenerate(drw, sheet);
+    HLog("HScaleApply: sheet regenerate(%d) -> %d\n", sheet, (int)status);
+
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    ProWindowRefresh(PRO_VALUE_UNUSED);
+
+    HMsg("SCALE_OK");
+}
+
+static int HScaleAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
+{
+    int      i, idx = -1;
+    ProError status;
+    ProMdl   drawing;
+
+    (void)p_value;
+    (void)p_push_command_data;
+
+    for (i = 0; i < H_SCALE_COUNT; i++)
+    {
+        if (g_scale_cmd[i] == command)
+        {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0)
+    {
+        HLog("HScaleAct: unknown command id %p\n", (void *)command);
+        return 0;
+    }
+
+    status = HGetDrawing(&drawing);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HLog("HScaleAct: not a drawing -> %d\n", (int)status);
+        HMsg("SCALE_NO_DRAWING");
+        return 0;
+    }
+
+    HScaleApply((ProDrawing)drawing, g_scale_items[idx].scale,
+                g_scale_items[idx].name);
+    return 0;
+}
+
+/*--------------------------------------------------------------- 自定义比例
+
+  ★ 用消息行输入（ProMessageStringRead），不走 ProUIDialog + .res 对话框：
+    少一个资源文件、少一类编码风险，而且和一键导出问文件名是同一个交互。
+    返回码：Esc -> PRO_TK_MSG_USER_QUIT，直接回车 -> PRO_TK_GENERAL_ERROR，
+    两者都按取消处理，不弹错误。
+\*---------------------------------------------------------------------*/
+/* "1:2.5" / "2.5:1" / "0.4" / "1/3" / 全角冒号 都能认；scale = a / b */
+static int HParseRatio(const wchar_t *w, double *out)
+{
+    wchar_t  buf[PRO_LINE_SIZE];
+    wchar_t *p;
+    wchar_t *colon;
+    double   a, b;
+
+    if (w == NULL || out == NULL)
+        return -1;
+
+    wcsncpy(buf, w, PRO_LINE_SIZE - 1);
+    buf[PRO_LINE_SIZE - 1] = L'\0';
+
+    for (p = buf; *p != L'\0'; p++)
+    {
+        if (*p == L'\uff1a' || *p == L'/' || *p == L'\\')
+            *p = L':';
+    }
+
+    colon = wcschr(buf, L':');
+    if (colon == NULL)
+    {
+        wchar_t *end = NULL;
+
+        a = wcstod(buf, &end);
+        if (end == buf || !(a > 0.0))
+            return -1;
+        *out = a;
+        return 0;
+    }
+
+    *colon = L'\0';
+    a = wcstod(buf, NULL);
+    b = wcstod(colon + 1, NULL);
+    if (!(a > 0.0) || !(b > 0.0))
+        return -1;
+
+    *out = a / b;
+    return 0;
+}
+
+static int HScaleCustomAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push_command_data)
+{
+    ProError status;
+    ProMdl   drawing;
+    wchar_t  buf[PRO_LINE_SIZE];
+    double   scale = 1.0;
+    double   cur   = 0.0;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    status = HGetDrawing(&drawing);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HLog("HScaleCustomAct: not a drawing -> %d\n", (int)status);
+        HMsg("SCALE_NO_DRAWING");
+        return 0;
+    }
+
+    if (ProDrawingScaleGet((ProDrawing)drawing, NULL, -1, &cur) == PRO_TK_NO_ERROR)
+        HLog("HScaleCustomAct: current scale=%.6f\n", cur);
+
+    HMsg("SCALE_ASK");
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    buf[0] = L'\0';
+    status = ProMessageStringRead(PRO_LINE_SIZE - 1, buf);
+    ProMessageClear();
+    HLog("HScaleCustomAct: read -> %d\n", (int)status);
+
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("SCALE_CANCEL");
+        return 0;
+    }
+
+    if (HParseRatio(buf, &scale) != 0 || !(scale > 0.0001) || !(scale < 10000.0))
+    {
+        HLog("HScaleCustomAct: bad input, parsed scale=%.6f\n", scale);
+        HMsg("SCALE_INVALID");
+        return 0;
+    }
+
+    HScaleApply((ProDrawing)drawing, scale, "H_ScaleCustom");
+    return 0;
+}
+
+
+
+/* 原生绘图注释命令自检：rbn 里这 11 个按钮的 mName 直接写的是
+   Creo 系统命令名，名字必须真实存在，否则按钮不显示。
+   启动时用 ProCmdCmdIdFind 逐个确认，结果写 h_load.log。 */
+static const char *g_native_cmds[] =
+{
+    "ProCmdDwgShowAllAnnots",
+    "ProCmdDwgCrStdNewRefDim",
+    "ProCmdDwgCrGtolSpecTol",
+    "ProCmdDwgCrOrdDim",
+    "ProCmdDtlInsFreeNote",
+    "ProCmdDtlInsOffsetNote",
+    "ProCmdDtlInsOnItemNote",
+    "ProCmdDtlInsLeaderNote",
+    "ProCmdDwgCreateSurfFin",
+    "ProCmdDwgCrSymInstance",
+    "ProCmdDwgCrGtolSetDtm",
+    "ProCmdDwgCrGtolMakeTarg",
+    "ProCmdDwgCreateDrftDatum",
+    "ProCmdDwgCreateDraftAxis",
+};
+
+static void HProbeNativeCmds(void)
+{
+    int       i;
+    int       n = (int)(sizeof(g_native_cmds) / sizeof(g_native_cmds[0]));
+    uiCmdCmdId id;
+
+    for (i = 0; i < n; i++)
+    {
+        id = 0;
+        ProCmdCmdIdFind((char *)g_native_cmds[i], &id);
+        HLog("native cmd %-28s -> %p %s\n",
+             g_native_cmds[i], (void *)id, id ? "[FOUND]" : "[MISSING]");
+    }
+}
 
 int user_initialize(
     int    argc,
@@ -2321,12 +3690,20 @@ int user_initialize(
     ProError    status;
     uiCmdCmdId  cmd_add, cmd_insert, cmd_renum, cmd_delete, cmd_export, cmd_dynaview;
     uiCmdCmdId  cmd_tolbrush;
+    uiCmdCmdId  cmd_techreq;
+    uiCmdCmdId  cmd_keydim;
+    uiCmdCmdId  cmd_keydimc;
+    uiCmdCmdId  cmd_openworkdir, cmd_setworkdir, cmd_openmdldir, cmd_mdltodir;
+    uiCmdCmdId  cmd_purgeold, cmd_eraseidle, cmd_cleanjunk;
     ProFileName msgfile;
+    int         i;
+    char        helpkey[PRO_LINE_SIZE];
 
     g_symdef_valid = PRO_B_FALSE;
 
     HInitPluginDir();
     HLog("---- user_initialize: H plugin ----\n");
+    HProbeNativeCmds();
     HLog("plugin_dir=%s\n", g_plugin_dir);
     HLog("symbols_dir=%s\n", g_symbols_dir);
     HLog("creo version=%s build=%s argc=%d\n",
@@ -2399,6 +3776,112 @@ int user_initialize(
         ProStringToWstring(errbuf, "H: fail to add command");
         return -1;
     }
+    status = ProCmdActionAdd(CMD_TECHREQ, (uiCmdCmdActFn)HTechReqAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_techreq);
+    HLog("ProCmdActionAdd(TechReq)  -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_KEYDIM, (uiCmdCmdActFn)HKeyDimAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_keydim);
+    HLog("ProCmdActionAdd(KeyDim)   -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_KEYDIMC, (uiCmdCmdActFn)HKeyDimClearAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_keydimc);
+    HLog("ProCmdActionAdd(KeyDimC)  -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_OPENWORKDIR, (uiCmdCmdActFn)HOpenWorkDirAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_openworkdir);
+    HLog("ProCmdActionAdd(OpenWorkDir) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_SETWORKDIR, (uiCmdCmdActFn)HSetWorkDirAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_setworkdir);
+    HLog("ProCmdActionAdd(SetWorkDir ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_OPENMDLDIR, (uiCmdCmdActFn)HOpenMdlDirAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_openmdldir);
+    HLog("ProCmdActionAdd(OpenMdlDir ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_MDLTODIR, (uiCmdCmdActFn)HMdlToDirAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_mdltodir);
+    HLog("ProCmdActionAdd(MdlToDir   ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_PURGEOLD, (uiCmdCmdActFn)HPurgeOldAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_purgeold);
+    HLog("ProCmdActionAdd(PurgeOld   ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_ERASEIDLE, (uiCmdCmdActFn)HEraseIdleAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_eraseidle);
+    HLog("ProCmdActionAdd(EraseIdle  ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_CLEANJUNK, (uiCmdCmdActFn)HCleanJunkAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_cleanjunk);
+    HLog("ProCmdActionAdd(CleanJunk  ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+
+
+    /* 绘图比例固定档位：共用 HScaleAct，靠 action 收到的 command id 区分 */
+    for (i = 0; i < H_SCALE_COUNT; i++)
+    {
+        status = ProCmdActionAdd((char *)g_scale_items[i].name,
+            (uiCmdCmdActFn)HScaleAct, uiProe2ndImmediate, HScaleAccess,
+            PRO_B_TRUE, PRO_B_FALSE, &g_scale_cmd[i]);
+        HLog("ProCmdActionAdd(%s) -> %d\n", g_scale_items[i].name, (int)status);
+        if (status != PRO_TK_NO_ERROR)
+        {
+            ProStringToWstring(errbuf, "H: fail to add command");
+            return -1;
+        }
+    }
+
+    /* 自定义比例 */
+    status = ProCmdActionAdd(CMD_SCALE_CUSTOM, (uiCmdCmdActFn)HScaleCustomAct,
+        uiProe2ndImmediate, HScaleAccess, PRO_B_TRUE, PRO_B_FALSE,
+        &g_scale_custom_cmd);
+    HLog("ProCmdActionAdd(%s) -> %d\n", CMD_SCALE_CUSTOM, (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
 
     /* 2. 指定命令的标签/帮助来源（按钮文字从 h_msg.txt 读）
        注意第 4 个参数 description（自定义功能区里的命令描述）：
@@ -2421,6 +3904,37 @@ int user_initialize(
         HLog("ProCmdDesignate(DynaView) -> %d\n", (int)status);
         status = ProCmdDesignate(cmd_tolbrush, CMD_TOLBRUSH, CMD_TOLBRUSH ".Help", empty_desc, msgfile);
         HLog("ProCmdDesignate(TolBrush) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_techreq, CMD_TECHREQ, CMD_TECHREQ ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(TechReq)  -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_keydim, CMD_KEYDIM, CMD_KEYDIM ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(KeyDim)   -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_keydimc, CMD_KEYDIMC, CMD_KEYDIMC ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(KeyDimC)  -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_openworkdir, CMD_OPENWORKDIR, CMD_OPENWORKDIR ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(OpenWorkDir) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_setworkdir, CMD_SETWORKDIR, CMD_SETWORKDIR ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(SetWorkDir ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_openmdldir, CMD_OPENMDLDIR, CMD_OPENMDLDIR ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(OpenMdlDir ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_mdltodir, CMD_MDLTODIR, CMD_MDLTODIR ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(MdlToDir   ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_purgeold, CMD_PURGEOLD, CMD_PURGEOLD ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(PurgeOld   ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_eraseidle, CMD_ERASEIDLE, CMD_ERASEIDLE ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(EraseIdle  ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_cleanjunk, CMD_CLEANJUNK, CMD_CLEANJUNK ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(CleanJunk  ) -> %d\n", (int)status);
+        for (i = 0; i < H_SCALE_COUNT; i++)
+        {
+            sprintf(helpkey, "%s.Help", g_scale_items[i].name);
+            status = ProCmdDesignate(g_scale_cmd[i], (char *)g_scale_items[i].name,
+                                     helpkey, empty_desc, msgfile);
+            HLog("ProCmdDesignate(%s) -> %d\n", g_scale_items[i].name, (int)status);
+        }
+        sprintf(helpkey, "%s.Help", CMD_SCALE_CUSTOM);
+        status = ProCmdDesignate(g_scale_custom_cmd, CMD_SCALE_CUSTOM,
+                                 helpkey, empty_desc, msgfile);
+        HLog("ProCmdDesignate(%s) -> %d\n", CMD_SCALE_CUSTOM, (int)status);
     }
 
     /* 3. 功能区（Ribbon）——主动调用官方 API 加载 rbn。

@@ -206,3 +206,474 @@ H_TolBrush.Help
 Pick a source dimension to read its tolerance settings (tolerance type, upper/lower values, ISO/DIN tolerance table, decimals), then click any number of other dimensions to apply the same settings to each; middle button or Esc finishes. To see tolerances, the Creo config option tol_display must be yes.
 点选一个源尺寸读取它的公差设置（公差类型、上/下公差值、ISO/DIN 公差表、小数位），然后逐个点选其它尺寸把同一套设置刷过去，个数不限；中键或 Esc 结束。要让公差显示出来，Creo 的 config 选项 tol_display 需为 yes。
 #
+SCALE_NO_DRAWING
+Please run this command in a drawing.
+请在工程图界面执行此命令。
+#
+SCALE_FAILED
+Failed to set the drawing scale. See h_load.log in the plugin folder.
+设置绘图比例失败，详情见插件目录下的 h_load.log。
+#
+SCALE_OK
+Drawing scale applied.
+绘图比例已设置。
+#
+#
+SCALE_ASK
+Enter drawing scale (e.g. 1:2.5, 2.5:1, 0.4). Esc to cancel:
+请输入绘图比例（例如 1:2.5、2.5:1、0.4），Esc 取消：
+#
+SCALE_CANCEL
+Scale change cancelled.
+已取消设置比例。
+#
+SCALE_INVALID
+Invalid scale. Use a format like 1:2.5, 2.5:1, 0.4 or 1/3.
+比例无效，请用 1:2.5、2.5:1、0.4、1/3 这类写法。
+#
+#
+H_Scale_1_1
+1:1
+1:1
+#
+H_Scale_1_1.Help
+Set the drawing scale to 1:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_2
+1:2
+1:2
+#
+H_Scale_1_2.Help
+Set the drawing scale to 1:2. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:2。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_3
+1:3
+1:3
+#
+H_Scale_1_3.Help
+Set the drawing scale to 1:3. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:3。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_4
+1:4
+1:4
+#
+H_Scale_1_4.Help
+Set the drawing scale to 1:4. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:4。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_2_1
+2:1
+2:1
+#
+H_Scale_2_1.Help
+Set the drawing scale to 2:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 2:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_3_1
+3:1
+3:1
+#
+H_Scale_3_1.Help
+Set the drawing scale to 3:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 3:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_4_1
+4:1
+4:1
+#
+H_Scale_4_1.Help
+Set the drawing scale to 4:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 4:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_2_3
+2:3
+2:3
+#
+H_Scale_2_3.Help
+Set the drawing scale to 2:3. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 2:3。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_2_5
+2:5
+2:5
+#
+H_Scale_2_5.Help
+Set the drawing scale to 2:5. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 2:5。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_5
+1:5
+1:5
+#
+H_Scale_1_5.Help
+Set the drawing scale to 1:5. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:5。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_6
+1:6
+1:6
+#
+H_Scale_1_6.Help
+Set the drawing scale to 1:6. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:6。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_8
+1:8
+1:8
+#
+H_Scale_1_8.Help
+Set the drawing scale to 1:8. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:8。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_10
+1:10
+1:10
+#
+H_Scale_1_10.Help
+Set the drawing scale to 1:10. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:10。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_12
+1:12
+1:12
+#
+H_Scale_1_12.Help
+Set the drawing scale to 1:12. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:12。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_15
+1:15
+1:15
+#
+H_Scale_1_15.Help
+Set the drawing scale to 1:15. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:15。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_1_20
+1:20
+1:20
+#
+H_Scale_1_20.Help
+Set the drawing scale to 1:20. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 1:20。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_3_2
+3:2
+3:2
+#
+H_Scale_3_2.Help
+Set the drawing scale to 3:2. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 3:2。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_5_2
+5:2
+5:2
+#
+H_Scale_5_2.Help
+Set the drawing scale to 5:2. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 5:2。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_5_1
+5:1
+5:1
+#
+H_Scale_5_1.Help
+Set the drawing scale to 5:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 5:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_6_1
+6:1
+6:1
+#
+H_Scale_6_1.Help
+Set the drawing scale to 6:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 6:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_8_1
+8:1
+8:1
+#
+H_Scale_8_1.Help
+Set the drawing scale to 8:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 8:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_10_1
+10:1
+10:1
+#
+H_Scale_10_1.Help
+Set the drawing scale to 10:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 10:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_12_1
+12:1
+12:1
+#
+H_Scale_12_1.Help
+Set the drawing scale to 12:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 12:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_15_1
+15:1
+15:1
+#
+H_Scale_15_1.Help
+Set the drawing scale to 15:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 15:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_Scale_20_1
+20:1
+20:1
+#
+H_Scale_20_1.Help
+Set the drawing scale to 20:1. This changes the sheet scale; views that have their own custom scale are not affected.
+把绘图比例设为 20:1。改的是图纸比例，单独设过「自定义比例」的视图不受影响。
+#
+H_ScaleCustom
+Custom Scale...
+自定义比例...
+#
+H_ScaleCustom.Help
+Type a ratio in the message line to set the drawing scale. Formats: 1:2.5, 2.5:1, 0.4, 1/3. Press Esc or Enter to cancel.
+在消息行输入比例来设置绘图比例，支持 1:2.5、2.5:1、0.4、1/3 这些写法；Esc 或直接回车取消。
+#
+#
+H_TechReq
+Technical Requirements
+技术要求
+#
+H_TechReq.Help
+Pick a text template from the plugin's templates folder; the whole file becomes one note. Choose the file, then click the placement point. Lines longer than 80 characters are truncated.
+从插件目录的模板文件夹里选一个 txt，整段作为一条注解插入。选完文件后点击放置位置。每行超过 80 个字符会被截断。
+#
+TECHREQ_NO_DRAWING
+Please run this command in a drawing.
+请在工程图界面执行此命令。
+#
+TECHREQ_NO_TEMPLATE
+Cannot open the template browser. Check the templates folder in the plugin directory.
+无法打开模板选择窗口，请检查插件目录下的 templates 文件夹。
+#
+TECHREQ_EMPTY
+The template is empty or unreadable.
+模板内容为空或无法读取。
+#
+TECHREQ_ASK
+Click the position for the note. Esc to cancel.
+点击注解的放置位置，Esc 取消。
+#
+TECHREQ_CANCEL
+Note placement cancelled.
+已取消插入技术要求。
+#
+TECHREQ_FAILED
+Failed to create the note. See h_load.log for details.
+创建注解失败，详情见 h_load.log。
+#
+TECHREQ_OK
+Technical requirements inserted.
+技术要求已插入。
+#
+H_KeyDim
+Key Dimension
+重点尺寸
+#
+H_KeyDim.Help
+Click each dimension you want to mark; a star is added in front of the dimension text. Middle-click or Esc to finish.
+点选要标记的尺寸，会在尺寸文字前面加一个 ★。可连续点多个，中键或 Esc 结束。
+#
+KEYDIM_PICK
+Click the dimensions to mark. Middle-click or Esc to finish.
+点选要标记的尺寸，可连续点多个；中键或 Esc 结束。
+#
+KEYDIM_APPLIED
+Star added.
+已加 ★ 标记。
+#
+KEYDIM_ALREADY
+Already marked, skipped.
+该尺寸已有 ★，已跳过。
+#
+KEYDIM_FAIL
+Cannot modify this dimension (reference or driven dimension).
+该尺寸不可修改（参考尺寸或从动尺寸）。
+#
+KEYDIM_NOT_DIM
+Not a dimension, skipped.
+不是尺寸，已跳过。
+#
+KEYDIM_OK
+Key dimensions marked.
+重点尺寸已标记。
+#
+KEYDIM_CANCEL
+No dimension marked.
+未标记任何尺寸。
+#
+H_KeyDimClear
+Clear Key Dimension
+取消重点尺寸
+#
+H_KeyDimClear.Help
+Click each dimension whose star you want to remove. Middle-click or Esc to finish.
+点选要去掉 ★ 的尺寸。可连续点多个，中键或 Esc 结束。
+#
+KEYDIMC_PICK
+Click the dimensions to clear. Middle-click or Esc to finish.
+点选要取消标记的尺寸，可连续点多个；中键或 Esc 结束。
+#
+KEYDIMC_CLEARED
+Star removed.
+已取消 ★ 标记。
+#
+KEYDIMC_NOMARK
+Not marked, skipped.
+该尺寸没有 ★，已跳过。
+#
+KEYDIMC_FAIL
+Cannot modify this dimension (reference or driven dimension).
+该尺寸不可修改（参考尺寸或从动尺寸）。
+#
+KEYDIMC_OK
+Key dimension marks cleared.
+已取消重点尺寸标记。
+#
+KEYDIMC_CANCEL
+No mark removed.
+未取消任何标记。
+#
+H_OpenWorkDir
+Open Work Directory
+打开工作目录
+#
+H_OpenWorkDir.Help
+Open the current working directory in File Explorer
+在资源管理器中打开当前工作目录
+#
+H_SetWorkDir
+Set Working Directory
+设置工作目录
+#
+H_SetWorkDir.Help
+Choose a folder and make it the Creo working directory
+选择一个文件夹并设为 Creo 工作目录
+#
+H_OpenMdlDir
+Open Model Directory
+打开模型目录
+#
+H_OpenMdlDir.Help
+Open the folder of the active model in File Explorer
+在资源管理器中打开当前模型所在的文件夹
+#
+H_MdlToDir
+Copy Models To...
+模型转目录
+#
+H_MdlToDir.Help
+Back up all models in session to a chosen folder
+把当前会话里的所有模型备份到指定的文件夹
+#
+H_PurgeOld
+Purge Old Versions
+批量删旧版
+#
+H_PurgeOld.Help
+Delete old version files (.prt.N / .asm.N ...) in the working directory
+删除工作目录下所有带版本号的旧文件（.prt.N / .asm.N 等）
+#
+H_EraseIdle
+Erase Not Displayed
+删除闲置模型
+#
+H_EraseIdle.Help
+Erase all models not shown in any window from session
+把没有显示在任何窗口里的模型从会话中移除
+#
+H_CleanJunk
+Clean Up Junk Files
+清理垃圾
+#
+H_CleanJunk.Help
+Delete temporary files (.err .out .idx .xpr ...) in the working directory
+删除工作目录下的临时文件（.err .out .idx .xpr 等）
+#
+SESSION_NO_WORKDIR
+Cannot read the current working directory.
+读不到当前工作目录。
+#
+SESSION_WORKDIR_OPENED
+Working directory opened in File Explorer.
+已在资源管理器中打开工作目录。
+#
+SESSION_OPEN_FAIL
+Failed to open the folder.
+打开文件夹失败。
+#
+SESSION_MDLDIR_OPENED
+Model folder opened in File Explorer.
+已在资源管理器中打开模型所在文件夹。
+#
+SESSION_SETDIR_OK
+Working directory changed.
+工作目录已切换。
+#
+SESSION_SETDIR_FAIL
+Failed to set the working directory.
+设置工作目录失败。
+#
+SESSION_NO_MDL
+No model in session. Open a model first.
+会话里没有模型，请先打开一个模型。
+#
+SESSION_BACKUP_OK
+Models backed up to the chosen folder.
+模型已备份到指定文件夹。
+#
+SESSION_BACKUP_FAIL
+Backup failed. See h_load.log for details.
+备份失败，详情见 h_load.log。
+#
+SESSION_PURGE_ASK
+Delete old version files in the working directory? Type Y and press Enter to go on, or press Enter to cancel.
+要删除当前工作目录下的旧版本文件吗？输入 Y 回车执行，直接回车取消。
+#
+SESSION_PURGE_OK
+Old version files deleted.
+旧版本文件已删除。
+#
+SESSION_PURGE_NONE
+No old version file found.
+没有找到旧版本文件。
+#
+SESSION_CLEAN_ASK
+Delete junk files (.err .out .idx .xpr ...) in the working directory? Type Y and press Enter to go on, or press Enter to cancel.
+要清理当前工作目录下的垃圾文件吗？输入 Y 回车执行，直接回车取消。
+#
+SESSION_CLEAN_OK
+Junk files cleaned up.
+垃圾文件已清理。
+#
+SESSION_CLEAN_NONE
+No junk file found.
+没有找到垃圾文件。
+#
+SESSION_ERASE_OK
+Idle models erased.
+闲置模型已删除。
+#
+SESSION_ERASE_FAIL
+Failed to erase models.
+删除闲置模型失败。
+#
+SESSION_BUSY
+Creo is busy, try again later.
+Creo 当前忙，请稍后再试。
+#
+SESSION_CANCEL
+Cancelled.
+已取消。
+#

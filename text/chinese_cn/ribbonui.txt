@@ -10,3 +10,23 @@ HA
 H_Func
 功能
 
+
+#H_Scale
+H_Scale
+绘图比例
+#H_ScaleMore
+H_ScaleMore
+更多比例
+
+#H_Session
+H_Session
+会话
+#H_SessionOps
+H_SessionOps
+会话操作
+#H_Annot
+H_Annot
+注释
+#H_AnnotNote
+H_AnnotNote
+注解
