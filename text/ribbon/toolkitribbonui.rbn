@@ -13,13 +13,268 @@
 1 onCreation 
 2 mNumComments 0
 2 mDate 
-1 groupList [5]
+1 groupList [10]
+2 groupList 
+3 ChildUnion(RbnDBGroup) ->
+4 RbnDBInheritContainer 
+5 mName user_custom_group_h_session
+5 mType 12
+5 mLabel 会话操作
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [8]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_OpenWorkDir
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_BatchBackup
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_MdlToDir
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_PurgeOld
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_SetWorkDir
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_OpenMdlDir
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_EraseIdle
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_CleanJunk
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+4 mToolLauncher 
+4 mBitmap 
+4 mPlugin 
+4 mGroupType 1
+2 groupList 
+3 ChildUnion(RbnDBGroup) ->
+4 RbnDBInheritContainer 
+5 mName user_custom_group_h_info
+5 mType 12
+5 mLabel 模型信息
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [2]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_Rename
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_Outline
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+4 mToolLauncher 
+4 mBitmap 
+4 mPlugin 
+4 mGroupType 1
+2 groupList 
+3 ChildUnion(RbnDBGroup) ->
+4 RbnDBInheritContainer 
+5 mName user_custom_group_h_color
+5 mType 12
+5 mLabel 着色
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [2]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_ColorAsm
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_ClearColor
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+4 mToolLauncher 
+4 mBitmap 
+4 mPlugin 
+4 mGroupType 1
+2 groupList 
+3 ChildUnion(RbnDBGroup) ->
+4 RbnDBInheritContainer 
+5 mName user_custom_group_h_view
+5 mType 12
+5 mLabel 视图
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [2]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_OpenInPlace
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_ViewNormal
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+4 mToolLauncher 
+4 mBitmap 
+4 mPlugin 
+4 mGroupType 1
+2 groupList 
+3 ChildUnion(RbnDBGroup) ->
+4 RbnDBInheritContainer 
+5 mName user_custom_group_h_vis
+5 mType 12
+5 mLabel 简化助手
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [6]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_ToggleHide
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_Hide
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_Unhide
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_HideAll
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_UnhideAll
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_SimpRep
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+4 mToolLauncher 
+4 mBitmap 
+4 mPlugin 
+4 mGroupType 1
 2 groupList 
 3 ChildUnion(RbnDBGroup) ->
 4 RbnDBInheritContainer 
 5 mName user_custom_group_h_balloon
 5 mType 12
-5 mLabel Balloon
+5 mLabel 球标
 5 mAncestor 
 5 mKeyTip 
 5 mCustom 1
@@ -33,7 +288,7 @@
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_InsertBalloon
@@ -42,7 +297,7 @@
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_DeleteBalloon
@@ -51,7 +306,7 @@
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_RenumberBalloon
@@ -60,7 +315,7 @@
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_KeyDim
@@ -69,7 +324,7 @@
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_KeyDimClear
@@ -78,7 +333,7 @@
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
 4 mToolLauncher 
 4 mBitmap 
 4 mPlugin 
@@ -86,32 +341,166 @@
 2 groupList 
 3 ChildUnion(RbnDBGroup) ->
 4 RbnDBInheritContainer 
-5 mName user_custom_group_h_func
+5 mName user_custom_group_h_annot
 5 mType 12
-5 mLabel H_Func
+5 mLabel 标注
 5 mAncestor 
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [4]
+5 containerChildrenArray [10]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
-8 mName H_ExportFiles
+8 mName ProCmdDwgCrStdNewRefDim
 8 mType 1
 8 Attributes 
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
-8 mName H_DynaView
+8 mName ProCmdDwgCrGtolSpecTol
 8 mType 1
 8 Attributes 
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName ProCmdDwgCrOrdDim
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCascade) ->
+8 RbnDBInheritContainer 
+9 mName h_annot_note
+9 mType 17
+9 mLabel 注释
+9 mAncestor 
+9 mKeyTip 
+9 mCustom 1
+9 Attributes 
+10 mUiAttribs [1]
+11 mUiAttribs ->
+12 mKey 6
+12 mValue SmallTextOnly
+9 containerChildrenArray [4]
+10 containerChildrenArray 
+11 ChildUnion(RbnDBCommand) ->
+12 mName ProCmdDtlInsFreeNote
+12 mType 1
+12 Attributes 
+13 mUiAttribs [1]
+14 mUiAttribs ->
+15 mKey 6
+15 mValue SmallTextOnly
+10 containerChildrenArray 
+11 ChildUnion(RbnDBCommand) ->
+12 mName ProCmdDtlInsOffsetNote
+12 mType 1
+12 Attributes 
+13 mUiAttribs [1]
+14 mUiAttribs ->
+15 mKey 6
+15 mValue SmallTextOnly
+10 containerChildrenArray 
+11 ChildUnion(RbnDBCommand) ->
+12 mName ProCmdDtlInsOnItemNote
+12 mType 1
+12 Attributes 
+13 mUiAttribs [1]
+14 mUiAttribs ->
+15 mKey 6
+15 mValue SmallTextOnly
+10 containerChildrenArray 
+11 ChildUnion(RbnDBCommand) ->
+12 mName ProCmdDtlInsLeaderNote
+12 mType 1
+12 Attributes 
+13 mUiAttribs [1]
+14 mUiAttribs ->
+15 mKey 6
+15 mValue SmallTextOnly
+8 mCommand 
+8 mFlyout 0
+8 mBitmap 
+8 mHelpText 
+8 mHelpTag 
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName ProCmdDwgCreateSurfFin
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName ProCmdDwgShowAllAnnots
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName ProCmdDwgCrGtolSetDtm
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName ProCmdDwgCrGtolMakeTarg
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName ProCmdDwgCreateDrftDatum
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName ProCmdDwgCreateDraftAxis
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
+4 mToolLauncher 
+4 mBitmap 
+4 mPlugin 
+4 mGroupType 1
+2 groupList 
+3 ChildUnion(RbnDBGroup) ->
+4 RbnDBInheritContainer 
+5 mName user_custom_group_h_dwg
+5 mType 12
+5 mLabel 工程图
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [3]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_TolBrush
@@ -120,7 +509,7 @@
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
 8 mName H_TechReq
@@ -129,7 +518,16 @@
 9 mUiAttribs [1]
 10 mUiAttribs ->
 11 mKey 6
-11 mValue Large
+11 mValue SmallTextOnly
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_DynaView
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue SmallTextOnly
 4 mToolLauncher 
 4 mBitmap 
 4 mPlugin 
@@ -139,7 +537,7 @@
 4 RbnDBInheritContainer 
 5 mName user_custom_group_h_scale
 5 mType 12
-5 mLabel H_Scale
+5 mLabel 比例
 5 mAncestor 
 5 mKeyTip 
 5 mCustom 1
@@ -204,7 +602,7 @@
 8 RbnDBInheritContainer 
 9 mName h_scale_more
 9 mType 17
-9 mLabel H_ScaleMore
+9 mLabel 更多
 9 mAncestor 
 9 mKeyTip 
 9 mCustom 1
@@ -212,7 +610,7 @@
 10 mUiAttribs [1]
 11 mUiAttribs ->
 12 mKey 6
-12 mValue Large
+12 mValue SmallTextOnly
 9 containerChildrenArray [20]
 10 containerChildrenArray 
 11 ChildUnion(RbnDBCommand) ->
@@ -406,243 +804,17 @@
 2 groupList 
 3 ChildUnion(RbnDBGroup) ->
 4 RbnDBInheritContainer 
-5 mName user_custom_group_h_session
+5 mName user_custom_group_h_export
 5 mType 12
-5 mLabel H_Session
+5 mLabel 导出
 5 mAncestor 
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [2]
+5 containerChildrenArray [1]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBCommand) ->
-8 mName H_OpenWorkDir
-8 mType 1
-8 Attributes 
-9 mUiAttribs [1]
-10 mUiAttribs ->
-11 mKey 6
-11 mValue SmallTextOnly
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCascade) ->
-8 RbnDBInheritContainer 
-9 mName h_session_ops
-9 mType 17
-9 mLabel H_SessionOps
-9 mAncestor 
-9 mKeyTip 
-9 mCustom 1
-9 Attributes 
-10 mUiAttribs [1]
-11 mUiAttribs ->
-12 mKey 6
-12 mValue SmallTextOnly
-9 containerChildrenArray [6]
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName H_SetWorkDir
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName H_OpenMdlDir
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName H_MdlToDir
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName H_PurgeOld
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName H_EraseIdle
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName H_CleanJunk
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-8 mCommand 
-8 mFlyout 0
-8 mBitmap 
-8 mHelpText 
-8 mHelpTag 
-4 mToolLauncher 
-4 mBitmap 
-4 mPlugin 
-4 mGroupType 1
-2 groupList 
-3 ChildUnion(RbnDBGroup) ->
-4 RbnDBInheritContainer 
-5 mName user_custom_group_h_annot
-5 mType 12
-5 mLabel H_Annot
-5 mAncestor 
-5 mKeyTip 
-5 mCustom 1
-5 Attributes 
-5 containerChildrenArray [10]
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCommand) ->
-8 mName ProCmdDwgCrStdNewRefDim
-8 mType 1
-8 Attributes 
-9 mUiAttribs [1]
-10 mUiAttribs ->
-11 mKey 6
-11 mValue Large
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCommand) ->
-8 mName ProCmdDwgCrGtolSpecTol
-8 mType 1
-8 Attributes 
-9 mUiAttribs [1]
-10 mUiAttribs ->
-11 mKey 6
-11 mValue SmallTextOnly
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCommand) ->
-8 mName ProCmdDwgCrOrdDim
-8 mType 1
-8 Attributes 
-9 mUiAttribs [1]
-10 mUiAttribs ->
-11 mKey 6
-11 mValue SmallTextOnly
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCascade) ->
-8 RbnDBInheritContainer 
-9 mName h_annot_note
-9 mType 17
-9 mLabel H_AnnotNote
-9 mAncestor 
-9 mKeyTip 
-9 mCustom 1
-9 Attributes 
-10 mUiAttribs [1]
-11 mUiAttribs ->
-12 mKey 6
-12 mValue SmallTextOnly
-9 containerChildrenArray [4]
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName ProCmdDtlInsFreeNote
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName ProCmdDtlInsOffsetNote
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName ProCmdDtlInsOnItemNote
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-10 containerChildrenArray 
-11 ChildUnion(RbnDBCommand) ->
-12 mName ProCmdDtlInsLeaderNote
-12 mType 1
-12 Attributes 
-13 mUiAttribs [1]
-14 mUiAttribs ->
-15 mKey 6
-15 mValue SmallTextOnly
-8 mCommand 
-8 mFlyout 0
-8 mBitmap 
-8 mHelpText 
-8 mHelpTag 
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCommand) ->
-8 mName ProCmdDwgCreateSurfFin
-8 mType 1
-8 Attributes 
-9 mUiAttribs [1]
-10 mUiAttribs ->
-11 mKey 6
-11 mValue SmallTextOnly
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCommand) ->
-8 mName ProCmdDwgShowAllAnnots
-8 mType 1
-8 Attributes 
-9 mUiAttribs [1]
-10 mUiAttribs ->
-11 mKey 6
-11 mValue SmallTextOnly
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCommand) ->
-8 mName ProCmdDwgCrGtolSetDtm
-8 mType 1
-8 Attributes 
-9 mUiAttribs [1]
-10 mUiAttribs ->
-11 mKey 6
-11 mValue SmallTextOnly
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCommand) ->
-8 mName ProCmdDwgCrGtolMakeTarg
-8 mType 1
-8 Attributes 
-9 mUiAttribs [1]
-10 mUiAttribs ->
-11 mKey 6
-11 mValue SmallTextOnly
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCommand) ->
-8 mName ProCmdDwgCreateDrftDatum
-8 mType 1
-8 Attributes 
-9 mUiAttribs [1]
-10 mUiAttribs ->
-11 mKey 6
-11 mValue SmallTextOnly
-6 containerChildrenArray 
-7 ChildUnion(RbnDBCommand) ->
-8 mName ProCmdDwgCreateDraftAxis
+8 mName H_ExportFiles
 8 mType 1
 8 Attributes 
 9 mUiAttribs [1]
@@ -653,7 +825,7 @@
 4 mBitmap 
 4 mPlugin 
 4 mGroupType 1
-1 pageList [1]
+1 pageList [5]
 2 pageList 
 3 ChildUnion(RbnDBPage) ->
 4 RbnDBInheritContainer 
@@ -664,16 +836,10 @@
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [5]
+5 containerChildrenArray [6]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_annot
-8 mType 15
-8 Attributes 
-8 mRuntimeRemoved 0
-6 containerChildrenArray 
-7 ChildUnion(RbnDBGroupRef) ->
-8 mName user_custom_group_h_session
 8 mType 15
 8 Attributes 
 8 mRuntimeRemoved 0
@@ -685,7 +851,7 @@
 8 mRuntimeRemoved 0
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
-8 mName user_custom_group_h_func
+8 mName user_custom_group_h_dwg
 8 mType 15
 8 Attributes 
 8 mRuntimeRemoved 0
@@ -695,9 +861,193 @@
 8 mType 15
 8 Attributes 
 8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_session
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_export
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
 4 mCloseButton 
 4 mPlugin 
-1 ribbonList [1]
+2 pageList 
+3 ChildUnion(RbnDBPage) ->
+4 RbnDBInheritContainer 
+5 mName page_H_3D@main_adb_cat
+5 mType 11
+5 mLabel H_Title
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [5]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_session
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_info
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_color
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_view
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_vis
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mCloseButton 
+4 mPlugin 
+2 pageList 
+3 ChildUnion(RbnDBPage) ->
+4 RbnDBInheritContainer 
+5 mName page_H_3D@prt_main_adb_cat
+5 mType 11
+5 mLabel H_Title
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [5]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_session
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_info
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_color
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_view
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_vis
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mCloseButton 
+4 mPlugin 
+2 pageList 
+3 ChildUnion(RbnDBPage) ->
+4 RbnDBInheritContainer 
+5 mName page_H_3D@asm_main_adb_cat
+5 mType 11
+5 mLabel H_Title
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [5]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_session
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_info
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_color
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_view
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_vis
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mCloseButton 
+4 mPlugin 
+2 pageList 
+3 ChildUnion(RbnDBPage) ->
+4 RbnDBInheritContainer 
+5 mName page_H_3D@prt_smt_main_adb_cat
+5 mType 11
+5 mLabel H_Title
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [5]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_session
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_info
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_color
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_view
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_vis
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mCloseButton 
+4 mPlugin 
+1 ribbonList [5]
 2 ribbonList 
 3 ChildUnion(RbnDBRibbon) ->
 4 RbnDBContainer 
@@ -719,7 +1069,91 @@
 8 mRuntimeRemoved 0
 4 mLabel __RBN_DB_NO_CHANGE__
 4 mDescription
-1 modeList [1]
+2 ribbonList 
+3 ChildUnion(RbnDBRibbon) ->
+4 RbnDBContainer 
+5 mName main_adb_cat
+5 mType 10
+5 Attributes 
+5 containerChildrenArray [2]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPosition) ->
+8 mName EOF
+8 mType 7
+8 Attributes 
+8 mIndex -1
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPageRef) ->
+8 mName page_H_3D@main_adb_cat
+8 mType 16
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+2 ribbonList 
+3 ChildUnion(RbnDBRibbon) ->
+4 RbnDBContainer 
+5 mName prt_main_adb_cat
+5 mType 10
+5 Attributes 
+5 containerChildrenArray [2]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPosition) ->
+8 mName EOF
+8 mType 7
+8 Attributes 
+8 mIndex -1
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPageRef) ->
+8 mName page_H_3D@prt_main_adb_cat
+8 mType 16
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+2 ribbonList 
+3 ChildUnion(RbnDBRibbon) ->
+4 RbnDBContainer 
+5 mName asm_main_adb_cat
+5 mType 10
+5 Attributes 
+5 containerChildrenArray [2]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPosition) ->
+8 mName EOF
+8 mType 7
+8 Attributes 
+8 mIndex -1
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPageRef) ->
+8 mName page_H_3D@asm_main_adb_cat
+8 mType 16
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+2 ribbonList 
+3 ChildUnion(RbnDBRibbon) ->
+4 RbnDBContainer 
+5 mName prt_smt_main_adb_cat
+5 mType 10
+5 Attributes 
+5 containerChildrenArray [2]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPosition) ->
+8 mName EOF
+8 mType 7
+8 Attributes 
+8 mIndex -1
+6 containerChildrenArray 
+7 ChildUnion(RbnDBPageRef) ->
+8 mName page_H_3D@prt_smt_main_adb_cat
+8 mType 16
+8 Attributes 
+8 mRuntimeRemoved 0
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+1 modeList [5]
 2 modeList 
 3 ChildUnion(RbnDBMode) ->
 4 RbnDBContainer 
@@ -727,6 +1161,42 @@
 5 mType 9
 5 Attributes 
 4 mRibbon drw_main_adb_cat
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+2 modeList 
+3 ChildUnion(RbnDBMode) ->
+4 RbnDBContainer 
+5 mName main_adb_cat
+5 mType 9
+5 Attributes 
+4 mRibbon main_adb_cat
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+2 modeList 
+3 ChildUnion(RbnDBMode) ->
+4 RbnDBContainer 
+5 mName prt_main_adb_cat
+5 mType 9
+5 Attributes 
+4 mRibbon prt_main_adb_cat
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+2 modeList 
+3 ChildUnion(RbnDBMode) ->
+4 RbnDBContainer 
+5 mName asm_main_adb_cat
+5 mType 9
+5 Attributes 
+4 mRibbon asm_main_adb_cat
+4 mLabel __RBN_DB_NO_CHANGE__
+4 mDescription
+2 modeList 
+3 ChildUnion(RbnDBMode) ->
+4 RbnDBContainer 
+5 mName prt_smt_main_adb_cat
+5 mType 9
+5 Attributes 
+4 mRibbon prt_smt_main_adb_cat
 4 mLabel __RBN_DB_NO_CHANGE__
 4 mDescription
 1 mIncrementalAttrs 1

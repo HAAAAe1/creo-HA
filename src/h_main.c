@@ -36,6 +36,7 @@
 #include <ProDrawing.h>
 #include <ProDrawingView.h>
 #include <ProSelection.h>
+#include <ProSelbuffer.h>
 #include <ProMenuBar.h>
 #include <ProRibbon.h>
 #include <ProUtil.h>
@@ -44,6 +45,16 @@
 #include <ProWstring.h>
 #include <ProDtlsyminst.h>
 #include <ProDtlsymdef.h>
+#include <ProSolid.h>
+#include <ProLayer.h>
+#include <ProSurface.h>
+#include <ProSurfacedata.h>
+#include <ProGeomitemdata.h>
+#include <ProAsmcomp.h>
+#include <ProAsmcomppath.h>
+#include <ProSimprep.h>
+#include <ProFeatType.h>
+#include <ProUIMessage.h>
 
 /* 注：这里曾经有一大段直接调 Win32 的「Esc 监听 + 光标离开图形区监听」代码，
    是为了配合自定义的跟随预览循环。现在拾取已换回 Creo 原生的
@@ -112,6 +123,20 @@
 #define CMD_TECHREQ "H_TechReq"
 #define CMD_KEYDIM  "H_KeyDim"
 #define CMD_KEYDIMC "H_KeyDimClear"
+#define CMD_OUTLINE      "H_Outline"
+#define CMD_HIDE         "H_Hide"
+#define CMD_UNHIDE       "H_Unhide"
+#define CMD_UNHIDEALL    "H_UnhideAll"
+#define CMD_TOGGLEHIDE   "H_ToggleHide"
+#define CMD_HIDEALL      "H_HideAll"
+#define CMD_COLORASM     "H_ColorAsm"   /* 现已合并为「随机着色」，名字沿用旧名 */
+#define H_SEL_MAX 512
+#define CMD_RENAME3D     "H_Rename"
+#define CMD_CLEARCOLOR   "H_ClearColor"
+#define CMD_OPENINPLACE  "H_OpenInPlace"
+#define CMD_VIEWNORMAL   "H_ViewNormal"
+#define CMD_BATCHBACKUP  "H_BatchBackup"
+#define CMD_SIMPREP      "H_SimpRep"
 
 #define CMD_OPENWORKDIR "H_OpenWorkDir"
 #define CMD_SETWORKDIR  "H_SetWorkDir"
@@ -212,6 +237,9 @@ static void HInitPluginDir(void)
 /*---------------------------------------------------------------------*\
   统一提示输出（g_msg_file 在 user_initialize 里初始化）
 \*---------------------------------------------------------------------*/
+/* 前置声明：HUiInfoW 的实现在后面，清理垃圾要用 */
+static void HUiInfoW(wchar_t *title, wchar_t *msg);
+
 static void HMsg(char *key)
 {
     ProMessageDisplay(g_msg_file, key);
@@ -3073,15 +3101,70 @@ static int HPurgeDirW(const wchar_t *dir, int do_delete)
 /*--------------------------------------------------------------------*\
   清理垃圾：只删白名单里的临时文件扩展名，不碰模型 / 图纸 / 任何其它文件。
 \*--------------------------------------------------------------------*/
-static int HCleanDirW(const wchar_t *dir, int do_delete)
+/*--------------------------------------------------------------------*\
+  清理垃圾：判定规则（★ 不能只看扩展名 —— trail.txt.369 的扩展名是 "369"）
+
+    A 类 = 纯临时，删了不影响任何东西：
+      · trail.txt / trail.txt.N        —— 轨迹文件，每启动一次加一个
+      · std.out / std.err              —— Creo 标准输出/错误（运行时被占用，删不掉属正常）
+      · *_log.xml                      —— Creo 12 每次开模型生成的日志
+      · current_session.pro            —— 会话快照，下次启动重建
+      · *.err .out .inf .idx .xpr .bak .dwl .m_p .lst .tst —— 老 Pro/E 临时文件
+
+    × 不碰：*.log（可能是用户/别的插件留的记录，含插件自己的 h_load.log）、
+           *.prt.N / *.asm.N（旧版本，归「批量删旧版」管）、
+           config.pro / *.dtl / *.pnt / *.sym / *.dat（配置资源）
+    × 只扫工作目录第一层，不进子目录
+\*--------------------------------------------------------------------*/
+typedef struct h_clean_stat
+{
+    int found;        /* 命中数 */
+    int removed;      /* 真正删掉的 */
+    int skipped;      /* 删失败（多为被 Creo 占用 err=32） */
+} HCleanStat;
+
+static int HIsJunkW(const wchar_t *name)
 {
     static const wchar_t *ok_ext[] = { L"err", L"out", L"inf", L"idx", L"xpr",
                                        L"bak", L"dwl", L"m_p", L"lst", L"tst" };
-    wchar_t         pat[PRO_PATH_SIZE], full[PRO_PATH_SIZE], ext[32];
+    wchar_t ext[32];
+    size_t  len;
+
+    if (name == NULL || name[0] == L'\0')
+        return 0;
+
+    /* 插件自己的调试日志，排错要用 */
+    if (_wcsicmp(name, L"h_load.log") == 0)
+        return 0;
+
+    /* ① 轨迹文件：trail.txt / trail.txt.N */
+    if (_wcsnicmp(name, L"trail.txt", 9) == 0)
+        return 1;
+
+    /* ② Creo 12 的模型日志：*_log.xml */
+    len = wcslen(name);
+    if (len > 8 && _wcsicmp(name + len - 8, L"_log.xml") == 0)
+        return 1;
+
+    /* ③ 会话快照 */
+    if (_wcsicmp(name, L"current_session.pro") == 0)
+        return 1;
+
+    /* ④ 老 Pro/E 临时文件，按扩展名 */
+    if (HExtOfW(name, ext, 32) != 0)
+        return 0;
+    return HInListW(ext, ok_ext, (int)(sizeof(ok_ext) / sizeof(ok_ext[0])));
+}
+
+/* do_delete = 0 只统计；1 真删。★ 计数只在真正删掉时才加。 */
+static int HCleanDirW(const wchar_t *dir, int do_delete, HCleanStat *st)
+{
+    wchar_t         pat[PRO_PATH_SIZE], full[PRO_PATH_SIZE];
     WIN32_FIND_DATAW fd;
     HANDLE          h;
-    int             n = 0;
 
+    if (dir == NULL || st == NULL)
+        return 0;
     if (HPathJoinW(pat, PRO_PATH_SIZE, dir, L"*", L".*") != 0)
         return 0;
 
@@ -3096,26 +3179,34 @@ static int HCleanDirW(const wchar_t *dir, int do_delete)
     {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             continue;
-        if (HExtOfW(fd.cFileName, ext, 32) != 0)
-            continue;
-        if (!HInListW(ext, ok_ext, (int)(sizeof(ok_ext) / sizeof(ok_ext[0]))))
+        if (!HIsJunkW(fd.cFileName))
             continue;
 
-        n++;
+        st->found++;
         if (!do_delete)
             continue;
         if (HPathJoinW(full, PRO_PATH_SIZE, dir, fd.cFileName, L"") != 0)
             continue;
+
         if (DeleteFileW(full))
+        {
+            st->removed++;
             HLogW("HCleanDirW: removed ", full);
+        }
         else
-            HLog("HCleanDirW: delete FAILED err=%lu\n",
-                 (unsigned long)GetLastError());
+        {
+            DWORD e = GetLastError();
+            st->skipped++;
+            HLog("HCleanDirW: delete FAILED err=%lu  (skip)\n",
+                 (unsigned long)e);
+            HLogW("HCleanDirW:   file = ", full);
+        }
     } while (FindNextFileW(h, &fd));
 
     FindClose(h);
-    HLog("HCleanDirW: %s %d file(s)\n", do_delete ? "removed" : "found", n);
-    return n;
+    HLog("HCleanDirW: found=%d removed=%d skipped=%d\n", st->found,
+         st->removed, st->skipped);
+    return st->found;
 }
 
 /* 打开工作目录（资源管理器） */
@@ -3184,7 +3275,6 @@ static int HOpenMdlDirAct(uiCmdCmdId command, uiCmdValue *p_value,
                           void *p_push_command_data)
 {
     ProMdl    mdl;
-    ProMdldata data;
     wchar_t   path[PRO_PATH_SIZE];
     ProError  status;
 
@@ -3200,20 +3290,17 @@ static int HOpenMdlDirAct(uiCmdCmdId command, uiCmdValue *p_value,
         return 0;
     }
 
-    memset(&data, 0, sizeof(data));
-    status = ProMdlDataGet(mdl, &data);
-    HLog("HOpenMdlDirAct: dataGet -> %d\n", (int)status);
-    if (status != PRO_TK_NO_ERROR)
+    /* ProMdlDataGet 在 Creo 12 里已废弃（返回 -34 OBSOLETE_FUNC），
+       改用 ProMdlDirectoryPathGet 直接拿"模型所在目录"。 */
+    memset(path, 0, sizeof(path));
+    status = ProMdlDirectoryPathGet(mdl, path);
+    HLog("HOpenMdlDirAct: dirPathGet -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR || path[0] == L'\0')
     {
         HMsg("SESSION_NO_MDL");
         return 0;
     }
-
-    wcsncpy(path, data.path, (size_t)PRO_PATH_SIZE - 1);
-    path[PRO_PATH_SIZE - 1] = L'\0';
-    HLogW("HOpenMdlDirAct: model path = ", path);
-
-    HDirOfW(path);
+    HLogW("HOpenMdlDirAct: model dir = ", path);
     if (path[0] == L'\0' || HShellOpenW(path) != 0)
     {
         HMsg("SESSION_OPEN_FAIL");
@@ -3358,8 +3445,9 @@ static int HEraseIdleAct(uiCmdCmdId command, uiCmdValue *p_value,
 static int HCleanJunkAct(uiCmdCmdId command, uiCmdValue *p_value,
                          void *p_push_command_data)
 {
-    ProPath dir;
-    int     n;
+    ProPath    dir;
+    HCleanStat st;
+    wchar_t    title[64], info[PRO_LINE_SIZE];
 
     (void)command;
     (void)p_value;
@@ -3373,13 +3461,25 @@ static int HCleanJunkAct(uiCmdCmdId command, uiCmdValue *p_value,
     }
     HLogW("HCleanJunkAct: dir = ", dir);
 
-    n = HCleanDirW(dir, 0);
-    HLog("HCleanJunkAct: scan n=%d\n", n);
-    if (n <= 0)
+    /* ① 先扫描，把"要删多少个"摆出来 */
+    memset(&st, 0, sizeof(st));
+    HCleanDirW(dir, 0, &st);
+    HLog("HCleanJunkAct: scan found=%d\n", st.found);
+
+    if (st.found <= 0)
     {
         HMsg("SESSION_CLEAN_NONE");
         return 0;
     }
+
+    wcscpy(title, L"清理垃圾");
+    swprintf(info, (size_t)PRO_LINE_SIZE,
+             L"当前工作目录下找到 %d 个垃圾文件：\n"
+             L"trail.txt* / std.out / std.err / *_log.xml / current_session.pro\n"
+             L"以及 *.err .inf .idx .xpr .bak .dwl .m_p .lst .tst\n\n"
+             L"不会动 *.log、旧版本和配置文件。确定删除吗？",
+             st.found);
+    HUiInfoW(title, info);
 
     if (!HConfirmYes("SESSION_CLEAN_ASK"))
     {
@@ -3387,9 +3487,22 @@ static int HCleanJunkAct(uiCmdCmdId command, uiCmdValue *p_value,
         return 0;
     }
 
-    n = HCleanDirW(dir, 1);
-    HLog("HCleanJunkAct: removed n=%d\n", n);
-    HMsg("SESSION_CLEAN_OK");
+    /* ② 真删，计数如实 */
+    memset(&st, 0, sizeof(st));
+    HCleanDirW(dir, 1, &st);
+    HLog("HCleanJunkAct: removed=%d skipped=%d\n", st.removed, st.skipped);
+
+    if (st.skipped > 0)
+        swprintf(info, (size_t)PRO_LINE_SIZE,
+                 L"已删除 %d 个。\n%d 个被 Creo 占用没删掉"
+                 L"（std.out 之类，关掉 Creo 再清一次就行）。",
+                 st.removed, st.skipped);
+    else
+        swprintf(info, (size_t)PRO_LINE_SIZE,
+                 L"已删除 %d 个垃圾文件。", st.removed);
+    HUiInfoW(title, info);
+
+    HMsg(st.removed > 0 ? "SESSION_CLEAN_OK" : "SESSION_CLEAN_FAIL");
     return 0;
 }
 
@@ -3644,6 +3757,1532 @@ static int HScaleCustomAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push
 
 
 
+/*=====================================================================*\
+  3D 模型功能（功能区【3D】组）
+  ---------------------------------------------------------------------
+  · 轮廓尺寸   ProSolidOutlineGet，弹窗报 长/宽/高（模型单位）
+  · 显示控制   ProModelitemHide / ProModelitemUnhide / 遍历特征全部显示
+  · 重命名     ProMdlnameRename，同名工程图跟着改
+  · 随机着色   写到零件外观（装配逐元件→零件，同一零件同色），颜色偏亮
+  · 清除着色   对零件外观传 NULL = 恢复默认外观
+  · 原位打开   记住装配当前视图矩阵 -> 打开零件 -> 把矩阵套上去
+  · 批量备份   ProMdlnameBackup（连带全部从属模型）
+  · 简化助手   ProSimprepSelect 让用户挑一条简化表示 -> 激活
+\*=====================================================================*/
+
+/* 取当前要操作的 3D 模型：
+   1) 当前窗口是零件/装配 -> 就是它
+   2) 当前窗口是工程图   -> 退回到该图“当前模型”（出图时不用切窗口）
+   3) 其它               -> 失败 */
+static ProError HGetSolid3D(ProMdl *p_mdl, ProMdlType *p_type)
+{
+    ProMdl     mdl = NULL;
+    ProMdlType t   = PRO_MDL_UNUSED;
+
+    if (p_mdl == NULL)
+        return PRO_TK_BAD_INPUTS;
+    *p_mdl = NULL;
+    if (p_type != NULL)
+        *p_type = PRO_MDL_UNUSED;
+
+    if (ProMdlCurrentGet(&mdl) != PRO_TK_NO_ERROR || mdl == NULL)
+        return PRO_TK_BAD_INPUTS;
+    if (ProMdlTypeGet(mdl, &t) != PRO_TK_NO_ERROR)
+        return PRO_TK_BAD_INPUTS;
+
+    if (t == PRO_MDL_PART || t == PRO_MDL_ASSEMBLY)
+    {
+        *p_mdl = mdl;
+        if (p_type != NULL)
+            *p_type = t;
+        return PRO_TK_NO_ERROR;
+    }
+
+    if (t == PRO_MDL_DRAWING)
+    {
+        ProSolid solid = NULL;
+
+        if (ProDrawingCurrentsolidGet((ProDrawing)mdl, &solid) == PRO_TK_NO_ERROR
+            && solid != NULL)
+        {
+            ProMdlType st = PRO_MDL_UNUSED;
+            if (ProMdlTypeGet((ProMdl)solid, &st) == PRO_TK_NO_ERROR
+                && (st == PRO_MDL_PART || st == PRO_MDL_ASSEMBLY))
+            {
+                HLog("HGetSolid3D: fallback to drawing current solid\n");
+                *p_mdl = (ProMdl)solid;
+                if (p_type != NULL)
+                    *p_type = st;
+                return PRO_TK_NO_ERROR;
+            }
+        }
+        HLog("HGetSolid3D: drawing has no current solid\n");
+    }
+    return PRO_TK_BAD_INPUTS;
+}
+
+/* 一个按钮的模态提示框（标题为宽字符字面量，正斜杠不存在转义问题） */
+static void HUiInfoW(wchar_t *title, wchar_t *msg)
+{
+    ProArray            btns = NULL;
+    ProUIMessageButton  b    = PRO_UI_MESSAGE_OK;
+    ProUIMessageButton  pick = PRO_UI_MESSAGE_OK;
+
+    if (ProArrayAlloc(0, sizeof(ProUIMessageButton), 1, &btns) == PRO_TK_NO_ERROR
+        && btns != NULL)
+    {
+        ProArrayObjectAdd(&btns, -1, 1, &b);
+        ProUIMessageDialogDisplay(PROUIMESSAGE_INFO, title, msg,
+                                  (ProUIMessageButton *)btns,
+                                  PRO_UI_MESSAGE_OK, &pick);
+        ProArrayFree(&btns);
+    }
+    else
+    {
+        HLog("HUiInfoW: ProArrayAlloc failed, dialog skipped\n");
+    }
+}
+
+/* 原生选择：过滤器名各版本略有差异，只有“报错”才降级重试，
+   用户自己按确定/取消（n=0）不会重复弹框。
+   ★ 返回的数组是 Creo 的静态内存，只能置 NULL，绝不许 free。 */
+static ProSelection g_hsel[H_SEL_MAX];
+static int           g_hsel_n = 0;
+
+/* 可选过滤器的版本：filters 按优先级逐个试，只有"报错"才降级。
+   ★★ 过滤器必须是 Creo 认得的名字（见 protk_appls 官方示例）：
+      prt_or_asm / part / asm / feature / surface / edge / face / point /
+      curve / csys / datum / axis / dimension / annot_elem，可用逗号组合。
+   ★ 没有 "any"，也没有空串 —— 传 "" 或 "any" 的结果是"什么都选不上"。 */
+static int HSelectItemsF(int max_count, char *tag, char **filters, int nf,
+                         ProSelection **p_sels, int *p_n)
+{
+    int          i, n = 0;
+    ProError     status = PRO_TK_BAD_INPUTS;
+    ProSelection *sels = NULL;
+
+    if (p_sels != NULL)
+        *p_sels = NULL;
+    if (p_n != NULL)
+        *p_n = 0;
+
+    /* ① 先看"选择缓冲区"：用户先选好对象再点按钮，这是 Creo 的习惯操作。
+       缓冲区数组必须 ProSelectionarrayFree（和 ProSelect 的静态数组正好相反）。 */
+    sels = NULL;
+    status = ProSelbufferSelectionsGet(&sels);
+    n = 0;
+    if (status == PRO_TK_NO_ERROR && sels != NULL)
+        ProArraySizeGet(sels, &n);
+    HLog("%s: selbuffer -> %d, n=%d\n", tag, (int)status, n);
+    if (status == PRO_TK_NO_ERROR && n > 0)
+    {
+        int m = 0;
+
+        if (n > H_SEL_MAX)
+            n = H_SEL_MAX;
+        /* ★★ ProSelectionarrayFree 会**连每个 ProSelection 一起释放**
+           （ProSelection.h:266 原文 "also frees each member ProSelection"）。
+           只拷指针再 free 数组 ⇒ g_hsel 里全是野指针 ⇒ 一用就崩。
+           必须先用 ProSelectionCopy 深拷贝。 */
+        for (i = 0; i < n; i++)
+        {
+            ProSelection copy = NULL;
+
+            if (ProSelectionCopy(sels[i], &copy) == PRO_TK_NO_ERROR
+                && copy != NULL)
+                g_hsel[m++] = copy;
+        }
+        ProSelectionarrayFree(sels);
+        sels = NULL;
+        g_hsel_n = m;
+        if (m <= 0)
+            return 0;
+        if (p_sels != NULL)
+            *p_sels = g_hsel;
+        if (p_n != NULL)
+            *p_n = m;
+        return 1;
+    }
+    if (sels != NULL)
+    {
+        ProSelectionarrayFree(sels);
+        sels = NULL;
+    }
+
+    /* ② 没有预选才进入交互选择 */
+    HMsg(max_count == 1 ? "TD_PICK_ONE" : "TD_PICK_TIP");
+    for (i = 0; i < nf; i++)
+    {
+        sels = NULL;
+        n    = 0;
+        status = ProSelect(filters[i], max_count, NULL, NULL, NULL, NULL,
+                           &sels, &n);
+        HLog("%s: ProSelect(\"%s\") -> %d, n=%d\n", tag, filters[i],
+             (int)status, n);
+        if (status == PRO_TK_NO_ERROR)
+        {
+            if (p_sels != NULL)
+                *p_sels = sels;
+            if (p_n != NULL)
+                *p_n = n;
+            return (n > 0) ? 1 : 0;
+        }
+    }
+    return 0;
+}
+
+/* 只读"选择缓冲区"（不弹交互拾取），给「一键」类命令用：
+   用户先选了对象就用它，没选就直接返回 0，不会打断操作。 */
+static int HSelbufferOnly(char *tag, ProSelection **p_sels, int *p_n)
+{
+    ProSelection *sels = NULL;
+    ProError      status;
+    int           i, n = 0, m = 0;
+
+    if (p_sels != NULL)
+        *p_sels = NULL;
+    if (p_n != NULL)
+        *p_n = 0;
+
+    status = ProSelbufferSelectionsGet(&sels);
+    if (status == PRO_TK_NO_ERROR && sels != NULL)
+        ProArraySizeGet(sels, &n);
+    HLog("%s: selbuffer(only) -> %d, n=%d\n", tag, (int)status, n);
+    if (status != PRO_TK_NO_ERROR || sels == NULL || n <= 0)
+    {
+        if (sels != NULL)
+            ProSelectionarrayFree(sels);
+        return 0;
+    }
+    if (n > H_SEL_MAX)
+        n = H_SEL_MAX;
+    for (i = 0; i < n; i++)
+    {
+        ProSelection copy = NULL;
+
+        if (ProSelectionCopy(sels[i], &copy) == PRO_TK_NO_ERROR && copy != NULL)
+            g_hsel[m++] = copy;
+    }
+    ProSelectionarrayFree(sels);
+    g_hsel_n = m;
+    if (m <= 0)
+        return 0;
+    if (p_sels != NULL)
+        *p_sels = g_hsel;
+    if (p_n != NULL)
+        *p_n = m;
+    return 1;
+}
+
+/* 默认过滤器组合（原来的行为，所有既有命令都用它） */
+static int HSelectItems(int max_count, char *tag,
+                        ProSelection **p_sels, int *p_n)
+{
+    static char *filters[3] = { "prt_or_asm",
+                                "part,asm,feature",
+                                "feature" };
+
+    return HSelectItemsF(max_count, tag, filters, 3, p_sels, p_n);
+}
+
+/* 释放 HSelectItems 从"选择缓冲区"深拷出来的那批 ProSelection。
+   ProSelect 返回的是 Creo 静态内存（绝不能 free），所以只处理 == g_hsel 的情况。 */
+static void HSelectFree(ProSelection *sels)
+{
+    int i;
+
+    if (sels != g_hsel || g_hsel_n <= 0)
+        return;
+    for (i = 0; i < g_hsel_n; i++)
+    {
+        if (g_hsel[i] != NULL)
+        {
+            ProSelection s = g_hsel[i];
+
+            ProSelectionFree(&s);
+            g_hsel[i] = NULL;
+        }
+    }
+    g_hsel_n = 0;
+}
+
+/*----------------------------- 1. 轮廓尺寸 -----------------------------*/
+static int HOutlineAct(uiCmdCmdId command, uiCmdValue *p_value,
+                       void *p_push_command_data)
+{
+    ProMdl     mdl  = NULL;
+    ProMdlType type = PRO_MDL_UNUSED;
+    Pro3dPnt   ext[2];
+    ProError   status;
+    double     dx, dy, dz;
+    ProMdlName nm;
+    wchar_t    msg[900];
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    if (HGetSolid3D(&mdl, &type) != PRO_TK_NO_ERROR)
+    {
+        HLog("HOutlineAct: no 3D model\n");
+        HMsg("TD_NOT_3D");
+        return 0;
+    }
+
+    memset(ext, 0, sizeof(ext));
+    status = ProSolidOutlineGet((ProSolid)mdl, ext);
+    HLog("HOutlineAct: outlineGet -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProMatrix mtx;
+        int       i, j;
+
+        for (i = 0; i < 4; i++)
+            for (j = 0; j < 4; j++)
+                mtx[i][j] = (i == j) ? 1.0 : 0.0;
+        status = ProSolidOutlineCompute((ProSolid)mdl, mtx, NULL, 0, ext);
+        HLog("HOutlineAct: outlineCompute -> %d\n", (int)status);
+    }
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_OUTLINE_FAIL");
+        return 0;
+    }
+
+    dx = fabs(ext[1][0] - ext[0][0]);
+    dy = fabs(ext[1][1] - ext[0][1]);
+    dz = fabs(ext[1][2] - ext[0][2]);
+    HLog("HOutlineAct: dx=%.3f dy=%.3f dz=%.3f\n", dx, dy, dz);
+
+    nm[0] = L'\0';
+    ProMdlMdlnameGet(mdl, nm);
+    swprintf(msg, sizeof(msg) / sizeof(msg[0]),
+             L"%ls\n\nX = %.3f\nY = %.3f\nZ = %.3f\n\n(unit: model unit)",
+             nm, dx, dy, dz);
+    HUiInfoW(L"Outline / 轮廓尺寸", msg);
+    return 0;
+}
+
+/*-------------------------- 2. 隐藏 / 取消隐藏 --------------------------*/
+/*----------------------- 2. 显示控制（4 个命令） -----------------------
+  ★ ProModelitemHide/Unhide 的参数是【层项目】。官方示例
+    pt_geardesign/GearDesign.c 里就是 ProModelitemInit(..., PRO_CURVE, ...)
+    再 ProModelitemHide，隐藏的是曲线。
+  ★ 而从 ProSelectionModelitemGet 取到的 item 常常是"零件模型"(PRO_PART)，
+    对装配元件会返回 PRO_TK_INVALID_TYPE。
+  ⇒ 先直连试一次；失败就用 ProSelectionAsmcomppathGet 拿元件路径，
+    重建成 type=PRO_FEAT_COMPONENT / owner=装配 / id=元件id 的 ProAsmcomp 再试。
+\*----------------------------------------------------------------------*/
+#define H_VIS_HIDE   0
+#define H_VIS_SHOW   1
+#define H_VIS_TOGGLE 2
+
+static ProError HHideApply(ProModelitem *item, int mode)
+{
+    ProBoolean hidden = PRO_B_FALSE;
+    ProError   e;
+
+    if (item == NULL)
+        return PRO_TK_BAD_INPUTS;
+
+    if (mode == H_VIS_TOGGLE)
+    {
+        /* 反隐藏 = 切换。
+           ★ ProModelitemIsHidden 对装配元件并不可靠（经常恒回 FALSE），
+             所以再加一层：Hide 若返回 NO_CHANGE，说明它本来就是隐藏态，
+             那就改做 Unhide —— 用返回值兜底，不单纯依赖 IsHidden。 */
+        e = ProModelitemIsHidden(item, &hidden);
+        HLog("HHideApply: toggle isHidden -> %d, hidden=%d\n", (int)e,
+             (int)hidden);
+
+        if (e == PRO_TK_NO_ERROR && hidden == PRO_B_TRUE)
+        {
+            e = ProModelitemUnhide(item);
+            HLog("HHideApply: toggle UNHIDE -> %d\n", (int)e);
+            return e;
+        }
+
+        e = ProModelitemHide(item);
+        HLog("HHideApply: toggle HIDE -> %d\n", (int)e);
+        if (e == PRO_TK_NO_CHANGE)          /* 其实已经是隐藏态了 */
+        {
+            e = ProModelitemUnhide(item);
+            HLog("HHideApply: toggle HIDE=NO_CHANGE -> retry UNHIDE -> %d\n",
+                 (int)e);
+        }
+        return e;
+    }
+
+    if (mode == H_VIS_HIDE)
+        return ProModelitemHide(item);
+    return ProModelitemUnhide(item);
+}
+
+/* 按元件 id 在装配里找到对应的元件 feature，再隐藏它本身 */
+typedef struct h_find_feat_ctx
+{
+    int      id;
+    int      mode;
+    int      found;
+    ProError err;
+} HFindFeatCtx;
+
+static ProError HFindFeatVisit(ProFeature *feat, ProError status,
+                               ProAppData app)
+{
+    HFindFeatCtx *fc = (HFindFeatCtx *)app;
+    ProFeattype   ftype = 0;
+
+    if (status != PRO_TK_NO_ERROR || feat == NULL || fc == NULL)
+        return PRO_TK_NO_ERROR;
+    if (feat->id != fc->id)
+        return PRO_TK_NO_ERROR;
+    if (ProFeatureTypeGet(feat, &ftype) != PRO_TK_NO_ERROR
+        || ftype != PRO_FEAT_COMPONENT)
+        return PRO_TK_NO_ERROR;
+
+    fc->found++;
+    fc->err = HHideApply((ProModelitem *)feat, fc->mode);
+    return PRO_TK_NO_ERROR;
+}
+
+static int HVisFromSelection(ProSelection sel, int mode, char *tag)
+{
+    ProModelitem   item;
+    ProAsmcomppath path;
+    ProAsmcomp     comp;
+    ProError       e;
+
+    memset(&item, 0, sizeof(item));
+    if (ProSelectionModelitemGet(sel, &item) == PRO_TK_NO_ERROR)
+    {
+        e = HHideApply(&item, mode);
+        HLog("%s: direct type=%d id=%d -> %d\n", tag, (int)item.type,
+             item.id, (int)e);
+        if (e == PRO_TK_NO_ERROR || e == PRO_TK_NO_CHANGE)
+            return 1;
+    }
+
+    memset(&path, 0, sizeof(path));
+    if (ProSelectionAsmcomppathGet(sel, &path) == PRO_TK_NO_ERROR
+        && path.table_num > 0 && path.owner != NULL)
+    {
+        int comp_id = path.comp_id_table[path.table_num - 1];
+
+        /* ② ★ 实测只有 PRO_FEATURE(3) 被 ProModelitemHide/Unhide 接受；
+              PRO_FEAT_COMPONENT(1000) 一定回 -18 INVALID_TYPE，别再试了。
+              Creo 内部元件就是一个 feature，id 用 comp id。 */
+        memset(&comp, 0, sizeof(comp));
+        comp.type  = PRO_FEATURE;
+        comp.id    = comp_id;
+        comp.owner = (ProMdl)path.owner;
+        e = HHideApply((ProModelitem *)&comp, mode);
+        HLog("%s: asfeat(3) id=%d depth=%d -> %d\n", tag, comp_id,
+             path.table_num, (int)e);
+        if (e == PRO_TK_NO_ERROR || e == PRO_TK_NO_CHANGE)
+            return 1;
+
+        /* ③ 兜底：遍历装配特征，按 id 找到元件 feature 本身再隐藏 */
+        {
+            HFindFeatCtx fc;
+
+            memset(&fc, 0, sizeof(fc));
+            fc.id   = comp_id;
+            fc.mode = mode;
+            ProSolidFeatVisit((ProSolid)path.owner, HFindFeatVisit, NULL,
+                              (ProAppData)&fc);
+            HLog("%s: byvisit id=%d found=%d -> %d\n", tag, comp_id,
+                 fc.found, (int)fc.err);
+            if (fc.found > 0
+                && (fc.err == PRO_TK_NO_ERROR || fc.err == PRO_TK_NO_CHANGE))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/* 显示控制（隐藏/显示/反隐藏/全部隐藏/全部显示）每次操作后统一跑一次重新生成，
+   再刷左侧模型树。用户 2026-10-22 要求："每次操作后都自动执行一次重新生成"，
+   目的就是让左边状态树跟着刷新。
+   ★ ProSolidRegenerate 只重算模型，**不会**刷模型树；刷树要用
+     ProTreetoolRefresh(ProMdl)（ProMdl.h:1324）。官方在 ProAsmcomp.h:630 的
+     See Also 里把 ProWindowRepaint + ProTreetoolRefresh 列为改元件后的标配。 */
+static void HVisRegenerate(char *tag)
+{
+    ProMdl     mdl  = NULL;
+    ProMdlType type = PRO_MDL_UNUSED;
+    ProError   e;
+
+    if (HGetSolid3D(&mdl, &type) != PRO_TK_NO_ERROR || mdl == NULL)
+        return;
+    e = ProSolidRegenerate((ProSolid)mdl, PRO_REGEN_NO_FLAGS);
+    HLog("%s: regenerate -> %d\n", tag, (int)e);
+    e = ProTreetoolRefresh(mdl);
+    HLog("%s: treeRefresh -> %d\n", tag, (int)e);
+}
+
+static int HVisRun(int mode, char *tag)
+{
+    ProSelection *sels = NULL;
+    int           n = 0, i, ok = 0, fail = 0;
+
+    if (!HSelectItems(-1, tag, &sels, &n))
+    {
+        HMsg("TD_NOTHING_SEL");
+        return 0;
+    }
+
+    for (i = 0; i < n; i++)
+    {
+        if (HVisFromSelection(sels[i], mode, tag))
+            ok++;
+        else
+            fail++;
+    }
+    HSelectFree(sels);
+    sels = NULL;
+
+    HVisRegenerate(tag);
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    HLog("%s: ok=%d fail=%d mode=%d\n", tag, ok, fail, mode);
+
+    /* ★ 反隐藏(SHOW)成功/失败要弹自己的文案：TD_UNHIDE_OK/FAIL 早在消息表里
+       备好了（"已恢复显示"/"恢复显示失败"），以前误用 TD_HIDE_* 会显示
+       "已隐藏选中对象"——话术指错。 */
+    if (ok <= 0)
+        HMsg(mode == H_VIS_TOGGLE ? "TD_TOGGLE_FAIL"
+                                  : (mode == H_VIS_SHOW ? "TD_UNHIDE_FAIL"
+                                                        : "TD_HIDE_FAIL"));
+    else
+        HMsg(mode == H_VIS_TOGGLE ? "TD_TOGGLE_OK"
+                                  : (mode == H_VIS_SHOW ? "TD_UNHIDE_OK"
+                                                        : "TD_HIDE_OK"));
+    return 0;
+}
+
+static int HHideAct(uiCmdCmdId command, uiCmdValue *p_value,
+                    void *p_push_command_data)
+{
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+    return HVisRun(H_VIS_HIDE, "HHideAct");
+}
+
+static int HUnhideAct(uiCmdCmdId command, uiCmdValue *p_value,
+                      void *p_push_command_data)
+{
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+    return HVisRun(H_VIS_SHOW, "HUnhideAct");
+}
+
+static int HVisAllRun(int mode, char *tag);   /* 定义在后面：全部隐藏/显示 */
+
+static int HToggleHideAct(uiCmdCmdId command, uiCmdValue *p_value,
+                          void *p_push_command_data)
+{
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+    /* ★ 反隐藏 = 全模型批量切换（用户 2026-10-22 明确定义）：
+       所有隐藏的对象显示出来、当前显示的对象隐藏掉；
+       不再走"选中单一对象"的路径。 */
+    return HVisAllRun(H_VIS_TOGGLE, "HToggleHideAct");
+}
+
+/* 全部隐藏 / 全部显示 / 反隐藏（全模型切换）：遍历模型里所有特征，
+   元件按 feat 自身的 PRO_FEATURE 类型直接处理 */
+typedef struct h_vis_all_ctx
+{
+    int mode;
+    int ok;
+    int fail;
+    int seen;
+    int comps;
+} HVisAllCtx;
+
+static ProError HVisAllVisit(ProFeature *feat, ProError status, ProAppData app)
+{
+    HVisAllCtx *ctx = (HVisAllCtx *)app;
+    ProFeattype ftype = 0;
+    ProError    e;
+
+    if (status != PRO_TK_NO_ERROR || feat == NULL || ctx == NULL)
+        return PRO_TK_NO_ERROR;
+    ctx->seen++;
+
+    /* ★ feat->type 本身就是 PRO_FEATURE(3)，实测这个 type 才被
+       ProModelitemHide/Unhide 接受；拼成 PRO_FEAT_COMPONENT(1000) 会回 -18 INVALID_TYPE。
+       所以直接用 feat，不再重建 ProAsmcomp。 */
+    if (ProFeatureTypeGet(feat, &ftype) == PRO_TK_NO_ERROR
+        && ftype == PRO_FEAT_COMPONENT)
+        ctx->comps++;
+    else if (ctx->mode == H_VIS_TOGGLE)
+        return PRO_TK_NO_ERROR;  /* ★ 反隐藏只翻元件（用户 2026-10-22），
+                                    基准面/坐标系等非元件特征一律不动 */
+
+    e = HHideApply((ProModelitem *)feat, ctx->mode);
+
+    if (e == PRO_TK_NO_ERROR)
+        ctx->ok++;
+    else if (e != PRO_TK_NO_CHANGE)
+        ctx->fail++;
+    return PRO_TK_NO_ERROR;
+}
+
+static int HVisAllRun(int mode, char *tag)
+{
+    ProMdl     mdl  = NULL;
+    ProMdlType type = PRO_MDL_UNUSED;
+    HVisAllCtx ctx;
+
+    if (HGetSolid3D(&mdl, &type) != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_NOT_3D");
+        return 0;
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.mode = mode;
+    ProSolidFeatVisit((ProSolid)mdl, HVisAllVisit, NULL, (ProAppData)&ctx);
+    HLog("%s: seen=%d comps=%d ok=%d fail=%d\n", tag, ctx.seen, ctx.comps,
+         ctx.ok, ctx.fail);
+
+    HVisRegenerate(tag);
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    if (mode == H_VIS_HIDE)
+        HMsg(ctx.ok > 0 ? "TD_HIDEALL_OK" : "TD_HIDEALL_NONE");
+    else if (mode == H_VIS_TOGGLE)
+        HMsg(ctx.ok > 0 ? "TD_TOGGLE_OK" : "TD_TOGGLE_FAIL");
+    else
+        HMsg(ctx.ok > 0 ? "TD_UNHIDE_OK" : "TD_UNHIDE_FAIL");
+    return 0;
+}
+
+static int HHideAllAct(uiCmdCmdId command, uiCmdValue *p_value,
+                       void *p_push_command_data)
+{
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+    return HVisAllRun(H_VIS_HIDE, "HHideAllAct");
+}
+
+static int HUnhideAllAct(uiCmdCmdId command, uiCmdValue *p_value,
+                         void *p_push_command_data)
+{
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+    return HVisAllRun(H_VIS_SHOW, "HUnhideAllAct");
+}
+
+/*---------------------------- 3. 重命名 -------------------------------*/
+static int HRename3DAct(uiCmdCmdId command, uiCmdValue *p_value,
+                        void *p_push_command_data)
+{
+    ProMdl     mdl  = NULL;
+    ProMdlType type = PRO_MDL_UNUSED;
+    ProMdlName old_name, new_name;
+    wchar_t    buf[PRO_LINE_SIZE];
+    ProError   status;
+    ProMdl     drw = NULL;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    if (HGetSolid3D(&mdl, &type) != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_NOT_3D");
+        return 0;
+    }
+
+    old_name[0] = L'\0';
+    ProMdlMdlnameGet(mdl, old_name);
+    HLogW("HRename3DAct: old = ", old_name);
+
+    HMsg("TD_RENAME_ASK");
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    buf[0] = L'\0';
+    status = ProMessageStringRead(PRO_MDLNAME_SIZE - 1, buf);
+    ProMessageClear();
+    HLog("HRename3DAct: read -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR || buf[0] == L'\0')
+    {
+        HMsg("TD_CANCEL");
+        return 0;
+    }
+
+    wcsncpy(new_name, buf, PRO_MDLNAME_SIZE - 1);
+    new_name[PRO_MDLNAME_SIZE - 1] = L'\0';
+
+    status = ProMdlnameRename(mdl, new_name);
+    HLog("HRename3DAct: rename model -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_RENAME_FAIL");
+        return 0;
+    }
+
+    /* 同名工程图跟着改（找不到就算了，不影响零件本身） */
+    if (old_name[0] != L'\0'
+        && ProMdlnameInit(old_name, PRO_MDL_DRAWING, &drw) == PRO_TK_NO_ERROR
+        && drw != NULL)
+    {
+        status = ProMdlnameRename(drw, new_name);
+        HLog("HRename3DAct: rename drawing -> %d\n", (int)status);
+    }
+
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    HMsg("TD_RENAME_OK");
+    return 0;
+}
+
+/*---------------- 4/5. 随机着色 / 清除着色 ----------------*/
+/* 2026-10-22 定稿（用户原话）：「装配着色和零件着色合并，改名随机着色，
+   从零件层直接随机着色，随机颜色范围调亮点，清除着色直接清除零件着色」。
+   ⇒ 组件级（元件级）外观在 Creo 12.4 实测 7 种 ProAsmitem 构造全回
+   -18(INVALID_TYPE)（含官方 ProAsmcompAsmitemInit 的产出、顶层元件空 path），
+   这条路彻底放弃。着色一律写到【零件模型】外观：
+     当前模型是零件 → 直接给该零件上色；
+     当前模型是装配 → 遍历元件（子装配递归），对元件引用的零件模型上色，
+                       同一零件的多个实例拿同一个颜色。
+   代价：颜色存在零件里 ⇒ 零件也要存盘才永久保留（提示语已写明）。 */
+#define H_COLOR_MAX_MDL 512
+#define H_COLOR_RANDOM  0     /* 随机着色：每个零件一个随机色 */
+#define H_COLOR_CLEAR   1     /* 清除着色：恢复默认外观 */
+
+typedef struct h_color_ctx
+{
+    int    mode;                         /* H_COLOR_RANDOM / H_COLOR_CLEAR */
+    ProMdl done[H_COLOR_MAX_MDL];        /* 已分配的零件（同一零件多实例同色） */
+    ProVector done_rgb[H_COLOR_MAX_MDL]; /* 每个零件固定的随机色 */
+    int    applied[H_COLOR_MAX_MDL];     /* 本次命令里已设过外观的零件（去重） */
+    int    n_done;
+    int    fail;
+    int    seen_feat;                    /* 遍历到的特征数（诊断） */
+    int    comp_ok;                      /* 认出来的元件数（诊断） */
+    int    part_ok;                      /* 写成功的零件数（成功判定） */
+} HColorCtx;
+
+static void HHsvToRgb(double h, double s, double v, ProVector rgb)
+{
+    double c, x, m, r = 0.0, g = 0.0, b = 0.0;
+    int    seg;
+
+    h = h - floor(h);
+    c = v * s;
+    x = c * (1.0 - fabs(fmod(h * 6.0, 2.0) - 1.0));
+    m = v - c;
+    seg = (int)(h * 6.0);
+    if (seg < 0) seg = 0;
+    if (seg > 5) seg = 5;
+    switch (seg)
+    {
+    case 0:  r = c; g = x; b = 0; break;
+    case 1:  r = x; g = c; b = 0; break;
+    case 2:  r = 0; g = c; b = x; break;
+    case 3:  r = 0; g = x; b = c; break;
+    case 4:  r = x; g = 0; b = c; break;
+    default: r = c; g = 0; b = x; break;
+    }
+    rgb[0] = r + m;
+    rgb[1] = g + m;
+    rgb[2] = b + m;
+}
+
+/* ============ 随机色生成 ============
+   ① 每会话只 srand 一次：连点（<16ms）不会落同一 tick 复读同一套色；
+   ② h/s/v 全随机，避免只换色相时相邻色相看着一样；
+   ③ 2026-10-22 用户要求「调亮点」：明度提到 0.90~0.99，饱和度 0.50~0.89。 */
+static int h_color_seeded = 0;
+
+static void HColorSeedOnce(void)
+{
+    if (!h_color_seeded)
+    {
+        srand((unsigned)GetTickCount());
+        h_color_seeded = 1;
+    }
+}
+
+static void HColorRandRgb(ProVector rgb)
+{
+    double h = (double)(rand() % 3600) / 3600.0;
+    double s = 0.50 + (double)(rand() % 400) / 1000.0;   /* 0.50 ~ 0.89 */
+    double v = 0.90 + (double)(rand() % 100) / 1000.0;   /* 0.90 ~ 0.99 */
+
+    HHsvToRgb(h, s, v, rgb);
+}
+
+/* 按 idx 组装一套外观属性（颜色来自 done_rgb[idx]，同一零件同色） */
+static void HColorBuildProps(HColorCtx *ctx, int idx,
+                             ProSurfaceAppearanceProps *props)
+{
+    int k = (idx >= 0 && idx < ctx->n_done) ? idx : 0;
+
+    memset(props, 0, sizeof(*props));
+    props->ambient      = 0.30;
+    props->diffuse      = 0.70;
+    props->highlite     = 0.30;
+    props->shininess    = 0.20;
+    props->transparency = 0.00;
+    props->reflection   = 0.00;
+
+    props->color_rgb[0] = ctx->done_rgb[k][0];
+    props->color_rgb[1] = ctx->done_rgb[k][1];
+    props->color_rgb[2] = ctx->done_rgb[k][2];
+    props->highlight_color[0] = ctx->done_rgb[k][0];
+    props->highlight_color[1] = ctx->done_rgb[k][1];
+    props->highlight_color[2] = ctx->done_rgb[k][2];
+}
+
+/* 零件 → 颜色序号。同一零件的多个实例拿到同一个序号 = 同色；都返回 >= 0。
+   ★ 颜色在“注册新零件”时随一次，存进 done_rgb —— 不能每次 apply 都随机，
+     否则同一零件的多个实例会各拿一个颜色。 */
+static int HColorIndexOf(HColorCtx *ctx, ProMdl mdl)
+{
+    int i;
+
+    for (i = 0; i < ctx->n_done; i++)
+        if (ctx->done[i] == mdl)
+            return i;
+    if (ctx->n_done >= H_COLOR_MAX_MDL - 1)
+        return ctx->n_done - 1;
+    ctx->done[ctx->n_done] = mdl;
+    HColorRandRgb(ctx->done_rgb[ctx->n_done]);
+    return ctx->n_done++;
+}
+
+/* 零件级外观写入（唯一通道）。返回 Set 的 status。 */
+static ProError HColorApply(ProAsmitem *ai, HColorCtx *ctx, int idx)
+{
+    ProSurfaceAppearanceProps props, rd;
+    ProError  status;
+
+    if (ai == NULL || ctx == NULL)
+        return PRO_TK_BAD_INPUTS;
+
+    if (ctx->mode == H_COLOR_CLEAR)
+    {
+        status = ProMdlVisibleSideAppearancepropsSet(ai, 0, NULL);
+        HLog("HColorApply: itemtype=%d id=%d clear -> %d\n", (int)ai->item.type,
+             ai->item.id, (int)status);
+        if (status != PRO_TK_NO_ERROR)
+            ctx->fail++;
+        return status;
+    }
+
+    HColorBuildProps(ctx, idx, &props);
+    status = ProMdlVisibleSideAppearancepropsSet(ai, 0, &props);
+
+    /* 写后回读：切开“没写进去”和“没刷新” */
+    memset(&rd, 0, sizeof(rd));
+    if (ProMdlVisibleSideAppearancepropsGet(ai, 0, &rd) == PRO_TK_NO_ERROR)
+        HLog("HColorApply: itemtype=%d idx=%d set -> %d, readback (%.2f,%.2f,%.2f)\n",
+             (int)ai->item.type, idx, (int)status, rd.color_rgb[0],
+             rd.color_rgb[1], rd.color_rgb[2]);
+    else
+        HLog("HColorApply: itemtype=%d idx=%d set -> %d, readback FAILED\n",
+             (int)ai->item.type, idx, (int)status);
+    if (status != PRO_TK_NO_ERROR)
+        ctx->fail++;
+    return status;
+}
+
+/* ============ 组件级（元件级）外观：已废弃 ============
+   2026-10-22 实测：7 种 ProAsmitem 构造（PRO_FEATURE / PRO_FEAT_COMPONENT ×
+   owner=直接父装配 / 顶层装配 × path 空 / 1 级 / 追加本级，含官方
+   ProAsmcompAsmitemInit 的产出）全部返回 -18(PRO_TK_INVALID_TYPE)；
+   ProSelectionAlloc 对最规范的空 path 能 alloc，但 1 级 path 直接 alloc FAILED。
+   结论：Creo 12.4 的 Pro/TOOLKIT 侧不接受这种组件 Asmitem，原生「外观」面板
+   的元件级指派只能走 OTK（wfcWSelection::SetVisibleAppearance）。
+   ⇒ 本插件放弃元件级，统一写到零件模型（见下）。 */
+
+/* 给一个零件模型写外观（或清除）。同一零件的多个实例只写一次。 */
+static void HColorOnePart(ProMdl mdl, HColorCtx *ctx)
+{
+    ProAsmitem ai;
+    int        idx;
+
+    if (mdl == NULL || ctx == NULL)
+        return;
+
+    idx = HColorIndexOf(ctx, mdl);
+    if (idx < 0 || idx >= H_COLOR_MAX_MDL)
+        return;
+    if (ctx->applied[idx])
+        return;                       /* 同一零件的多个实例只设一次 */
+    ctx->applied[idx] = 1;
+
+    memset(&ai, 0, sizeof(ai));
+    if (ProMdlToModelitem(mdl, &ai.item) != PRO_TK_NO_ERROR)
+    {
+        HLog("HColorOnePart: toModelitem failed\n");
+        return;
+    }
+    ai.path.owner     = NULL;         /* 零件模型：path 为空 */
+    ai.path.table_num = 0;
+
+    if (HColorApply(&ai, ctx, idx) == PRO_TK_NO_ERROR)
+        ctx->part_ok++;
+}
+
+/* 装配遍历：只对元件引用的【零件模型】上色；子装配递归。 */
+static void HColorVisitAsm(ProSolid asm, HColorCtx *ctx);
+
+static ProError HColorCompVisit(ProFeature *feat, ProError status,
+                                ProAppData app)
+{
+    HColorCtx  *ctx = (HColorCtx *)app;
+    ProAsmcomp  comp;
+    ProMdl      sub = NULL;
+    ProMdlType  mt = PRO_MDL_UNUSED;
+    ProFeattype ftype = 0;
+
+    if (status != PRO_TK_NO_ERROR || feat == NULL || ctx == NULL)
+        return PRO_TK_NO_ERROR;
+    ctx->seen_feat++;
+
+    /* ★ feat->type 是【对象类型】PRO_FEATURE(3)，永远不是 PRO_FEAT_COMPONENT(1000)。
+       判元件必须用 ProFeatureTypeGet 取【特征类型】。 */
+    if (ProFeatureTypeGet(feat, &ftype) != PRO_TK_NO_ERROR
+        || ftype != PRO_FEAT_COMPONENT)
+        return PRO_TK_NO_ERROR;
+    ctx->comp_ok++;
+
+    comp = *(ProAsmcomp *)feat;            /* 同一种 pro_model_item 布局 */
+    if (ProAsmcompMdlGet(&comp, &sub) != PRO_TK_NO_ERROR || sub == NULL)
+    {
+        HLog("HColorCompVisit: compMdlGet failed (fid=%d)\n", feat->id);
+        return PRO_TK_NO_ERROR;
+    }
+    if (ProMdlTypeGet(sub, &mt) != PRO_TK_NO_ERROR)
+        return PRO_TK_NO_ERROR;
+
+    if (mt == PRO_MDL_ASSEMBLY)
+    {
+        HColorVisitAsm((ProSolid)sub, ctx); /* 子装配：递归进去 */
+        return PRO_TK_NO_ERROR;
+    }
+    if (mt != PRO_MDL_PART)
+        return PRO_TK_NO_ERROR;
+
+    HColorOnePart(sub, ctx);
+    return PRO_TK_NO_ERROR;
+}
+
+static void HColorVisitAsm(ProSolid asm, HColorCtx *ctx)
+{
+    if (asm == NULL || ctx == NULL)
+        return;
+    ProSolidFeatVisit(asm, HColorCompVisit, NULL, (ProAppData)ctx);
+}
+
+static void HColorOneMdl(ProMdl mdl, HColorCtx *ctx)
+{
+    ProMdlType t = PRO_MDL_UNUSED;
+
+    if (mdl == NULL || ctx == NULL)
+        return;
+    if (ProMdlTypeGet(mdl, &t) != PRO_TK_NO_ERROR)
+        return;
+
+    if (t == PRO_MDL_ASSEMBLY)
+    {
+        HLog("HColorOneMdl: assembly, visiting components\n");
+        HColorVisitAsm((ProSolid)mdl, ctx);
+        return;
+    }
+    if (t == PRO_MDL_PART)
+    {
+        HColorOnePart(mdl, ctx);
+        return;
+    }
+    HLog("HColorOneMdl: skip mdl type=%d\n", (int)t);
+}
+
+static int HColorRun(int mode, char *tag)
+{
+    ProMdl     mdl  = NULL;
+    ProMdlType type = PRO_MDL_UNUSED;
+    HColorCtx  ctx;
+
+    if (HGetSolid3D(&mdl, &type) != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_NOT_3D");
+        return 0;
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.mode = mode;
+    HColorSeedOnce();                 /* 整个会话只 srand 一次，避免连点同色 */
+
+    HColorOneMdl(mdl, &ctx);
+    HLog("%s: mode=%d parts=%d fail=%d feats=%d comps=%d ok=%d\n",
+         tag, mode, ctx.n_done, ctx.fail, ctx.seen_feat, ctx.comp_ok,
+         ctx.part_ok);
+
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    ProWindowRefresh(PRO_VALUE_UNUSED);
+
+    /* 成功判定只看实际写进零件的外观数 */
+    if (ctx.part_ok <= 0)
+        HMsg("TD_COLOR_FAIL");
+    else if (mode == H_COLOR_CLEAR)
+        HMsg("TD_COLOR_CLR_OK");
+    else
+        HMsg("TD_COLOR_OK");
+    return 0;
+}
+
+/* 随机着色（装配 / 零件通用，一律写到零件外观） */
+static int HColorRandomAct(uiCmdCmdId command, uiCmdValue *p_value,
+                           void *p_push_command_data)
+{
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+    return HColorRun(H_COLOR_RANDOM, "HColorRandomAct");
+}
+
+static int HClearColorAct(uiCmdCmdId command, uiCmdValue *p_value,
+                          void *p_push_command_data)
+{
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+    return HColorRun(H_COLOR_CLEAR, "HClearColorAct");
+}
+
+/*--------------------------- 6. 原位打开 -----------------------------*/
+/* 2026-10-22 修：原实现 ProMdlDisplay(sub) 直接把【当前窗口】（装配）换成零件，
+   装配窗口就没了；而且 ProViewMatrixSet 传的是 ProViewMatrixGet 原样矩阵，
+   带 Creo 自己的缩放/位移 -> 返回 -2(PRO_TK_BAD_INPUTS)，视角根本没套上。
+   现在：
+   1) 先 ProObjectwindowMdlnameCreate 给零件分配它自己的窗口（装配窗口保留）；
+   2) 视图矩阵 R = 元件放置旋转 T（member->顶层装配）× 装配当前视图 V，
+      再按官方 UserMatrixNormalize 归一化（ProViewMatrixSet 拒收带缩放/位移的矩阵）；
+   3) 切到零件窗口后 Set（NULL = 该窗口当前视图）。 */
+
+/* 归一化 4x4 变换矩阵 —— 官方示例 protk_appls/.../UgGraphViewsSave.c 的
+   UserMatrixNormalize：按第 0 行长度去缩放，第 3 行前 3 列清零去位移。 */
+static void HMatrixNormalize(ProMatrix m)
+{
+    double scale = sqrt(m[0][0] * m[0][0] + m[0][1] * m[0][1]
+                        + m[0][2] * m[0][2]);
+    int    row, col;
+
+    if (scale > 1e-12)
+    {
+        for (row = 0; row < 3; row++)
+            for (col = 0; col < 3; col++)
+                m[row][col] /= scale;
+    }
+    m[3][0] = 0.0;
+    m[3][1] = 0.0;
+    m[3][2] = 0.0;
+}
+
+static int HOpenInPlaceAct(uiCmdCmdId command, uiCmdValue *p_value,
+                           void *p_push_command_data)
+{
+    ProMdl        asm_mdl = NULL;
+    ProMdlType    type    = PRO_MDL_UNUSED;
+    ProSelection *sels    = NULL;
+    int           n = 0;
+    ProModelitem  item;
+    ProAsmcomp    comp;
+    ProAsmcomppath path;
+    ProMdl        sub = NULL;
+    ProMdlName    mname;
+    ProMdlType    stype = PRO_MDL_UNUSED;
+    ProType       otype = PRO_PART;
+    ProMatrix     vmtx, tmtx, rmtx;
+    int           win_part = -1;
+    int           i, j;
+    ProError      status;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    if (HGetSolid3D(&asm_mdl, &type) != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_NOT_3D");
+        return 0;
+    }
+    if (type != PRO_MDL_ASSEMBLY)
+    {
+        HMsg("TD_ASSY_ONLY");
+        return 0;
+    }
+
+    if (!HSelectItems(-1, "HOpenInPlaceAct", &sels, &n))
+    {
+        HMsg("TD_NOTHING_SEL");
+        return 0;
+    }
+
+    /* ★ ProSelectionModelitemGet 对元件选择返回的是"零件模型"
+       (PRO_PART, id=0)，直接转 ProAsmcomp 再 ProAsmcompMdlGet 必失败
+       （实测日志 compMdlGet failed）。正确路子（与隐藏功能同一模式）：
+       先用 ProSelectionAsmcomppathGet 拿元件路径，重建
+       {PRO_FEATURE, comp_id, owner} —— 这个组合才被接受。 */
+    memset(&comp, 0, sizeof(comp));
+    memset(&path, 0, sizeof(path));
+    if (ProSelectionAsmcomppathGet(sels[0], &path) == PRO_TK_NO_ERROR
+        && path.table_num > 0 && path.owner != NULL)
+    {
+        comp.type  = PRO_FEATURE;
+        comp.id    = path.comp_id_table[path.table_num - 1];
+        comp.owner = (ProMdl)path.owner;
+        HLog("HOpenInPlaceAct: ascomp id=%d depth=%d\n", comp.id,
+             path.table_num);
+    }
+    else if (ProSelectionModelitemGet(sels[0], &item) == PRO_TK_NO_ERROR)
+    {
+        comp = *(ProAsmcomp *)&item;
+        HLog("HOpenInPlaceAct: direct type=%d id=%d\n", (int)item.type,
+             item.id);
+    }
+    else
+    {
+        HSelectFree(sels);
+        sels = NULL;
+        HMsg("TD_OPENINPLACE_FAIL");
+        return 0;
+    }
+    HSelectFree(sels);
+    sels = NULL;
+
+    if (ProAsmcompMdlGet(&comp, &sub) != PRO_TK_NO_ERROR || sub == NULL)
+    {
+        HLog("HOpenInPlaceAct: compMdlGet failed\n");
+        HMsg("TD_OPENINPLACE_FAIL");
+        return 0;
+    }
+
+    /* ---- 1. 装配当前视图矩阵 V（归一化后才能跨窗口使用） ---- */
+    memset(vmtx, 0, sizeof(vmtx));
+    status = ProViewMatrixGet(asm_mdl, NULL, vmtx);
+    HLog("HOpenInPlaceAct: matrixGet -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_OPENINPLACE_FAIL");
+        return 0;
+    }
+    HMatrixNormalize(vmtx);
+
+    /* ---- 2. 元件放置旋转 T（member -> 顶层装配）；取不到就退回单位阵 ---- */
+    memset(tmtx, 0, sizeof(tmtx));
+    tmtx[0][0] = tmtx[1][1] = tmtx[2][2] = tmtx[3][3] = 1.0;
+    if (path.table_num > 0)
+    {
+        ProError tst = ProAsmcomppathTrfGet(&path, PRO_B_TRUE, tmtx);
+
+        HLog("HOpenInPlaceAct: trfGet -> %d\n", (int)tst);
+        if (tst != PRO_TK_NO_ERROR)
+        {
+            memset(tmtx, 0, sizeof(tmtx));
+            tmtx[0][0] = tmtx[1][1] = tmtx[2][2] = tmtx[3][3] = 1.0;
+        }
+    }
+
+    /* ---- 3. R = T × V。ProMatrix 是行向量约定（位移在第 3 行）：
+       p_asm = p_comp·T，screen = p_asm·V ⇒ screen = p_comp·(T·V) ---- */
+    memset(rmtx, 0, sizeof(rmtx));
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++)
+            rmtx[i][j] = tmtx[i][0] * vmtx[0][j]
+                       + tmtx[i][1] * vmtx[1][j]
+                       + tmtx[i][2] * vmtx[2][j];
+    rmtx[3][3] = 1.0;
+    HMatrixNormalize(rmtx);
+    HLog("HOpenInPlaceAct: R=(%.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f)\n",
+         rmtx[0][0], rmtx[0][1], rmtx[0][2],
+         rmtx[1][0], rmtx[1][1], rmtx[1][2],
+         rmtx[2][0], rmtx[2][1], rmtx[2][2]);
+
+    /* ---- 4. 给零件分配它自己的窗口；装配窗口保持不动 ---- */
+    memset(mname, 0, sizeof(mname));
+    status = ProMdlMdlnameGet(sub, mname);
+    HLog("HOpenInPlaceAct: mdlnameGet -> %d\n", (int)status);
+    if (status == PRO_TK_NO_ERROR)
+    {
+        otype = PRO_PART;
+        if (ProMdlTypeGet(sub, &stype) == PRO_TK_NO_ERROR
+            && stype == PRO_MDL_ASSEMBLY)
+            otype = PRO_ASSEMBLY;
+        status = ProObjectwindowMdlnameCreate(mname, otype, &win_part);
+        HLog("HOpenInPlaceAct: objwindowCreate -> %d win=%d\n",
+             (int)status, win_part);
+    }
+    /* 零件已经有自己的窗口了，这一下只会把它显示在那个窗口里，不会顶掉装配。
+       ★ 窗口创建失败时【不要】再调 ProMdlDisplay——那会把装配窗口换成零件。 */
+    if (win_part < 0)
+    {
+        HLog("HOpenInPlaceAct: no window for part, abort (assembly kept)\n");
+        HMsg("TD_OPENINPLACE_FAIL");
+        return 0;
+    }
+    ProMdlDisplay(sub);
+    ProWindowCurrentSet(win_part);   /* 同步模式：切当前窗口 */
+    ProWindowActivate(win_part);     /* 异步模式有效；同步下失败无害 */
+
+    /* ---- 5. 套视角（矩阵已归一化，不会再拿 -2） ---- */
+    status = ProViewMatrixSet(sub, NULL, rmtx);
+    HLog("HOpenInPlaceAct: matrixSet -> %d\n", (int)status);
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    HMsg("TD_OPENINPLACE_OK");
+    return 0;
+}
+
+/*--------------------------- 6b. 视图正归位 --------------------------*/
+/* 2026-10-22 新增，同日改版：**以坐标轴为基准**（不再要求先拾取基准面）。
+   1) 方向 n 的来源：
+      · 用户预先选了平面/基准面 → 垂直于该面（n = 面法向，朝观察者）；
+      · 什么都没选 → 世界坐标轴 FRONT 正视，n = (0,-1,0)
+        （观察者在 -Y 侧朝 +Y 看 ⇒ 屏幕右 +X、屏幕上 +Z），一点就归位。
+   2) 视图矩阵 M[2] = n —— 屏幕 Z 轴（指向观察者）；
+      M[0] = 参考世界轴在垂直于 n 的平面内的投影（画面不歪头）；
+      M[1] = M[2] × M[0]（右手系）；
+   3) Set 之后 ProWindowRefit ⇒ 自动调距离（模型充满窗口）。
+   矩阵语义见 ProView.h：行向量约定 v_view = v_world * M，
+   M[0]=屏幕X、M[1]=屏幕Y、M[2]=屏幕Z（朝观察者）。
+   ★ 基准平面在内部就是一个 ProSurface（ProSurface.h 有 ProSurfaceIsDatumPlane
+     为证），但 ProGeomitemdataGet 不收 PRO_DATUM_PLANE，
+     所以基准面走 ProSurfaceInit(owner, id) 再取数据这条路。 */
+
+static void HVecNormalize(ProVector v)
+{
+    double len = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+
+    if (len > 1e-12)
+    {
+        v[0] /= len;
+        v[1] /= len;
+        v[2] /= len;
+    }
+}
+
+/* 曲面法向。uv 传 NULL 时取参数域中点（平面直接用局部系的 e3）。 */
+static int HSurfNormalGet(ProSurface surf, ProUvParam uv, ProVector n)
+{
+    ProGeomitemdata *pdata = NULL;
+    ProSurfacedata  *sd;
+    ProUvParam       p;
+    ProVector        xyz, d1[2], d2[3];
+    ProError         st;
+
+    n[0] = n[1] = n[2] = 0.0;
+    if (surf == NULL)
+        return 0;
+    if (ProSurfaceDataGet(surf, &pdata) != PRO_TK_NO_ERROR || pdata == NULL)
+    {
+        HLog("HSurfNormalGet: surfDataGet failed\n");
+        return 0;
+    }
+    sd = pdata->data.p_surface_data;
+    if (sd == NULL)
+    {
+        ProGeomitemdataFree(&pdata);
+        return 0;
+    }
+    HLog("HSurfNormalGet: surf type=%d\n", (int)sd->type);
+
+    if (sd->type == PRO_SRF_PLANE)
+    {
+        n[0] = sd->srf_shape.plane.e3[0];
+        n[1] = sd->srf_shape.plane.e3[1];
+        n[2] = sd->srf_shape.plane.e3[2];
+        ProGeomitemdataFree(&pdata);
+        HVecNormalize(n);
+        return (fabs(n[0]) + fabs(n[1]) + fabs(n[2]) > 1e-9) ? 1 : 0;
+    }
+
+    if (uv != NULL)
+    {
+        p[0] = uv[0];
+        p[1] = uv[1];
+    }
+    else
+    {
+        p[0] = 0.5 * (sd->uv_min[0] + sd->uv_max[0]);
+        p[1] = 0.5 * (sd->uv_min[1] + sd->uv_max[1]);
+    }
+    ProGeomitemdataFree(&pdata);
+
+    st = ProSurfaceXyzdataEval(surf, p, xyz, d1, d2, n);
+    HLog("HSurfNormalGet: xyzdataEval -> %d n=(%.3f %.3f %.3f)\n",
+         (int)st, n[0], n[1], n[2]);
+    if (st != PRO_TK_NO_ERROR)
+        return 0;
+    HVecNormalize(n);
+    return 1;
+}
+
+/* 从一次拾取里拿平面法向（朝观察者侧）。成功返回 1。 */
+static int HPlaneNormalFromSel(ProSelection sel, ProMdl mdl, ProVector n)
+{
+    ProModelitem     item;
+    ProGeomitemdata *pdata = NULL;
+    ProSurfacedata  *sd;
+    ProSurface       surf = NULL;
+    ProUvParam       uv;
+    ProError         st;
+    int              have_uv = 0;
+
+    n[0] = n[1] = n[2] = 0.0;
+    if (ProSelectionModelitemGet(sel, &item) != PRO_TK_NO_ERROR)
+    {
+        HLog("HPlaneNormalFromSel: modelitemGet failed\n");
+        return 0;
+    }
+    HLog("HPlaneNormalFromSel: type=%d id=%d\n", (int)item.type, item.id);
+
+    /* 拾取点 UV（只对曲面有意义，拿不到就算了） */
+    memset(uv, 0, sizeof(uv));
+    if (ProSelectionUvParamGet(sel, uv) == PRO_TK_NO_ERROR)
+        have_uv = 1;
+
+    /* ---- 路线 A：普通曲面的几何数据（基准面这里会失败，属正常） ---- */
+    pdata = NULL;
+    st = ProGeomitemdataGet((ProGeomitem *)&item, &pdata);
+    if (st == PRO_TK_NO_ERROR && pdata != NULL)
+    {
+        sd = pdata->data.p_surface_data;
+        if (sd != NULL && sd->type == PRO_SRF_PLANE)
+        {
+            n[0] = sd->srf_shape.plane.e3[0];
+            n[1] = sd->srf_shape.plane.e3[1];
+            n[2] = sd->srf_shape.plane.e3[2];
+            ProGeomitemdataFree(&pdata);
+            HVecNormalize(n);
+            HLog("HPlaneNormalFromSel: A-plane n=(%.3f %.3f %.3f)\n",
+                 n[0], n[1], n[2]);
+            if (fabs(n[0]) + fabs(n[1]) + fabs(n[2]) > 1e-9)
+                return 1;
+        }
+        ProGeomitemdataFree(&pdata);
+        pdata = NULL;
+    }
+    else
+    {
+        HLog("HPlaneNormalFromSel: geomitemdata -> %d\n", (int)st);
+    }
+
+    /* ---- 路线 B：ProSurfaceInit（基准平面靠这条） ---- */
+    surf = NULL;
+    st = ProSurfaceInit(item.owner, item.id, &surf);
+    HLog("HPlaneNormalFromSel: surfInit(owner) -> %d\n", (int)st);
+    if (st != PRO_TK_NO_ERROR || surf == NULL)
+    {
+        surf = NULL;
+        st = ProSurfaceInit(mdl, item.id, &surf);
+        HLog("HPlaneNormalFromSel: surfInit(mdl) -> %d\n", (int)st);
+    }
+    if (surf == NULL)
+        return 0;
+
+    if (HSurfNormalGet(surf, have_uv ? uv : NULL, n))
+        return 1;
+    return 0;
+}
+
+static int HViewNormalAct(uiCmdCmdId command, uiCmdValue *p_value,
+                          void *p_push_command_data)
+{
+    ProMdl        mdl  = NULL;
+    ProMdlType    mt   = PRO_MDL_UNUSED;
+    ProSelection *sels = NULL;
+    int           n = 0;
+    int           i, k, got = 0;
+    int           win = -1;
+    ProVector     nrm, ref;
+    double        dot;
+    ProMatrix     m;
+    ProError      st;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    if (HGetSolid3D(&mdl, &mt) != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_NOT_3D");
+        return 0;
+    }
+
+    /* 2026-10-22 改版：以【坐标轴】为基准。
+       先看用户有没有预先选对象（平面/基准面 → 垂直于该面）；
+       什么都没选就按模型坐标轴正视，不再弹拾取框，一点就归位。 */
+    if (HSelbufferOnly("HViewNormalAct", &sels, &n))
+    {
+        for (i = 0; i < n && !got; i++)
+        {
+            if (HPlaneNormalFromSel(sels[i], mdl, nrm))
+                got = 1;
+        }
+        HSelectFree(sels);
+        sels = NULL;
+    }
+
+    if (!got)
+    {
+        /* 世界坐标轴 FRONT 正视：观察者在 -Y 侧朝 +Y 看，
+           屏幕 Z（朝观察者）= -Y ⇒ 屏幕右 = +X、屏幕上 = +Z。 */
+        nrm[0] = 0.0;
+        nrm[1] = -1.0;
+        nrm[2] = 0.0;
+        HLog("HViewNormalAct: no pick -> world axis front normal (0,-1,0)\n");
+    }
+    HLog("HViewNormalAct: normal=(%.3f %.3f %.3f)\n", nrm[0], nrm[1], nrm[2]);
+
+    /* ---- 参考轴：取与法向最不平行的世界轴（优先 X，然后 Z，最后 Y） ---- */
+    ref[0] = ref[1] = ref[2] = 0.0;
+    if (fabs(nrm[0]) < 0.9)
+        ref[0] = 1.0;
+    else if (fabs(nrm[2]) < 0.9)
+        ref[2] = 1.0;
+    else
+        ref[1] = 1.0;
+
+    /* ---- 构造视图矩阵：r0 = ref 在面内的投影，r1 = r2 × r0，r2 = 法向 ---- */
+    dot = ref[0] * nrm[0] + ref[1] * nrm[1] + ref[2] * nrm[2];
+    for (k = 0; k < 3; k++)
+        m[0][k] = ref[k] - dot * nrm[k];
+    HVecNormalize(m[0]);
+    if (fabs(m[0][0]) + fabs(m[0][1]) + fabs(m[0][2]) < 1e-9)
+    {
+        HLog("HViewNormalAct: degenerate screen X, abort\n");
+        HMsg("TD_VIEWNORMAL_FAIL");
+        return 0;
+    }
+    m[1][0] = nrm[1] * m[0][2] - nrm[2] * m[0][1];
+    m[1][1] = nrm[2] * m[0][0] - nrm[0] * m[0][2];
+    m[1][2] = nrm[0] * m[0][1] - nrm[1] * m[0][0];
+    HVecNormalize(m[1]);
+    m[2][0] = nrm[0];
+    m[2][1] = nrm[1];
+    m[2][2] = nrm[2];
+    m[0][3] = m[1][3] = m[2][3] = 0.0;
+    m[3][0] = m[3][1] = m[3][2] = 0.0;
+    m[3][3] = 1.0;
+
+    st = ProViewMatrixSet(mdl, NULL, m);
+    HLog("HViewNormalAct: matrixSet -> %d\n", (int)st);
+    if (st != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_VIEWNORMAL_FAIL");
+        return 0;
+    }
+
+    /* ---- 自动调距离：让模型充满当前窗口 ---- */
+    win = -1;
+    ProWindowCurrentGet(&win);
+    st = ProWindowRefit(win);
+    HLog("HViewNormalAct: windowRefit(win=%d) -> %d\n", win, (int)st);
+    if (st != PRO_TK_NO_ERROR)
+    {
+        st = ProViewRefit(mdl, NULL);
+        HLog("HViewNormalAct: viewRefit -> %d\n", (int)st);
+    }
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+
+    HMsg("TD_VIEWNORMAL_OK");
+    return 0;
+}
+
+/*--------------------------- 7. 批量备份 -----------------------------*/
+static int HBatchBackupAct(uiCmdCmdId command, uiCmdValue *p_value,
+                           void *p_push_command_data)
+{
+    ProMdl     mdl  = NULL;
+    ProMdlType type = PRO_MDL_UNUSED;
+    ProPath    dir;
+    ProError   status;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    if (HGetSolid3D(&mdl, &type) != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_NOT_3D");
+        return 0;
+    }
+
+    dir[0] = L'\0';
+    status = ProDirectoryChoose(L"选择备份目录 / Backup to", NULL, NULL, NULL, dir);
+    HLog("HBatchBackupAct: choose -> %d\n", (int)status);
+    if (status == PRO_TK_USER_ABORT)
+        return 0;
+    if (status != PRO_TK_NO_ERROR || dir[0] == L'\0')
+    {
+        HMsg("TD_CANCEL");
+        return 0;
+    }
+    HLogW("HBatchBackupAct: dir = ", dir);
+
+    status = ProMdlnameBackup(mdl, dir);
+    HLog("HBatchBackupAct: backup -> %d\n", (int)status);
+    HMsg(status == PRO_TK_NO_ERROR ? "TD_BACKUP_OK" : "TD_BACKUP_FAIL");
+    return 0;
+}
+
+/*--------------------------- 8. 简化助手 -----------------------------*/
+static int HSimpRepAct(uiCmdCmdId command, uiCmdValue *p_value,
+                       void *p_push_command_data)
+{
+    ProMdl     mdl  = NULL;
+    ProMdlType type = PRO_MDL_UNUSED;
+    ProSimprep rep;
+    ProError   status;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    if (HGetSolid3D(&mdl, &type) != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_NOT_3D");
+        return 0;
+    }
+    if (type != PRO_MDL_ASSEMBLY)
+    {
+        HMsg("TD_ASSY_ONLY");
+        return 0;
+    }
+
+    memset(&rep, 0, sizeof(rep));
+    status = ProSimprepSelect((ProSolid)mdl, &rep);
+    HLog("HSimpRepAct: select -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_CANCEL");
+        return 0;
+    }
+
+    status = ProSimprepActivate((ProSolid)mdl, &rep);
+    HLog("HSimpRepAct: activate -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_SIMPREP_FAIL");
+        return 0;
+    }
+
+    ProSolidDisplay((ProSolid)mdl);
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    HMsg("TD_SIMPREP_OK");
+    return 0;
+}
+
 /* 原生绘图注释命令自检：rbn 里这 11 个按钮的 mName 直接写的是
    Creo 系统命令名，名字必须真实存在，否则按钮不显示。
    启动时用 ProCmdCmdIdFind 逐个确认，结果写 h_load.log。 */
@@ -3658,7 +5297,6 @@ static const char *g_native_cmds[] =
     "ProCmdDtlInsOnItemNote",
     "ProCmdDtlInsLeaderNote",
     "ProCmdDwgCreateSurfFin",
-    "ProCmdDwgCrSymInstance",
     "ProCmdDwgCrGtolSetDtm",
     "ProCmdDwgCrGtolMakeTarg",
     "ProCmdDwgCreateDrftDatum",
@@ -3695,6 +5333,11 @@ int user_initialize(
     uiCmdCmdId  cmd_keydimc;
     uiCmdCmdId  cmd_openworkdir, cmd_setworkdir, cmd_openmdldir, cmd_mdltodir;
     uiCmdCmdId  cmd_purgeold, cmd_eraseidle, cmd_cleanjunk;
+    uiCmdCmdId  cmd_outline, cmd_hide, cmd_unhide, cmd_unhideall;
+    uiCmdCmdId  cmd_togglehide, cmd_hideall;
+    uiCmdCmdId  cmd_rename3d, cmd_colorasm, cmd_clearcolor;
+    uiCmdCmdId  cmd_openinplace, cmd_batchbackup, cmd_simprep;
+    uiCmdCmdId  cmd_viewnormal;
     ProFileName msgfile;
     int         i;
     char        helpkey[PRO_LINE_SIZE];
@@ -3795,6 +5438,110 @@ int user_initialize(
     status = ProCmdActionAdd(CMD_KEYDIMC, (uiCmdCmdActFn)HKeyDimClearAct,
         uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_keydimc);
     HLog("ProCmdActionAdd(KeyDimC)  -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_OUTLINE, (uiCmdCmdActFn)HOutlineAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_outline);
+    HLog("ProCmdActionAdd(Outline    ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_HIDE, (uiCmdCmdActFn)HHideAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_hide);
+    HLog("ProCmdActionAdd(Hide       ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_UNHIDE, (uiCmdCmdActFn)HUnhideAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_unhide);
+    HLog("ProCmdActionAdd(Unhide     ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_UNHIDEALL, (uiCmdCmdActFn)HUnhideAllAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_unhideall);
+    HLog("ProCmdActionAdd(UnhideAll  ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_TOGGLEHIDE, (uiCmdCmdActFn)HToggleHideAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_togglehide);
+    HLog("ProCmdActionAdd(ToggleHide ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_HIDEALL, (uiCmdCmdActFn)HHideAllAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_hideall);
+    HLog("ProCmdActionAdd(HideAll    ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_RENAME3D, (uiCmdCmdActFn)HRename3DAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_rename3d);
+    HLog("ProCmdActionAdd(Rename3D   ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_COLORASM, (uiCmdCmdActFn)HColorRandomAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_colorasm);
+    HLog("ProCmdActionAdd(ColorAsm   ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_CLEARCOLOR, (uiCmdCmdActFn)HClearColorAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_clearcolor);
+    HLog("ProCmdActionAdd(ClearColor ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_OPENINPLACE, (uiCmdCmdActFn)HOpenInPlaceAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_openinplace);
+    HLog("ProCmdActionAdd(OpenInPlace) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_VIEWNORMAL, (uiCmdCmdActFn)HViewNormalAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_viewnormal);
+    HLog("ProCmdActionAdd(ViewNormal ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_BATCHBACKUP, (uiCmdCmdActFn)HBatchBackupAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_batchbackup);
+    HLog("ProCmdActionAdd(BatchBackup) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_SIMPREP, (uiCmdCmdActFn)HSimpRepAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_simprep);
+    HLog("ProCmdActionAdd(SimpRep    ) -> %d\n", (int)status);
     if (status != PRO_TK_NO_ERROR)
     {
         ProStringToWstring(errbuf, "H: fail to add command");
@@ -3924,6 +5671,32 @@ int user_initialize(
         HLog("ProCmdDesignate(EraseIdle  ) -> %d\n", (int)status);
         status = ProCmdDesignate(cmd_cleanjunk, CMD_CLEANJUNK, CMD_CLEANJUNK ".Help", empty_desc, msgfile);
         HLog("ProCmdDesignate(CleanJunk  ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_outline, CMD_OUTLINE, CMD_OUTLINE ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(Outline    ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_hide, CMD_HIDE, CMD_HIDE ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(Hide       ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_unhide, CMD_UNHIDE, CMD_UNHIDE ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(Unhide     ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_unhideall, CMD_UNHIDEALL, CMD_UNHIDEALL ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_togglehide, CMD_TOGGLEHIDE, CMD_TOGGLEHIDE ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(ToggleHide ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_hideall, CMD_HIDEALL, CMD_HIDEALL ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(HideAll    ) -> %d\n", (int)status);
+        HLog("ProCmdDesignate(UnhideAll  ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_rename3d, CMD_RENAME3D, CMD_RENAME3D ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(Rename3D   ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_colorasm, CMD_COLORASM, CMD_COLORASM ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(ColorAsm   ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_clearcolor, CMD_CLEARCOLOR, CMD_CLEARCOLOR ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(ClearColor ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_openinplace, CMD_OPENINPLACE, CMD_OPENINPLACE ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(OpenInPlace) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_viewnormal, CMD_VIEWNORMAL, CMD_VIEWNORMAL ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(ViewNormal ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_batchbackup, CMD_BATCHBACKUP, CMD_BATCHBACKUP ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(BatchBackup) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_simprep, CMD_SIMPREP, CMD_SIMPREP ".Help", empty_desc, msgfile);
+        HLog("ProCmdDesignate(SimpRep    ) -> %d\n", (int)status);
         for (i = 0; i < H_SCALE_COUNT; i++)
         {
             sprintf(helpkey, "%s.Help", g_scale_items[i].name);

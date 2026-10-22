@@ -86,6 +86,38 @@ Balloon
 Balloon
 球标
 #
+H_GrpSession
+Session
+会话操作
+#
+H_GrpInfo
+Model Info
+模型信息
+#
+H_GrpColor
+Colors
+着色
+#
+H_GrpView
+View
+视图
+#
+H_GrpVis
+Simplify
+简化助手
+#
+H_GrpDwg
+Drawing
+工程图
+#
+H_GrpExport
+Export
+导出
+#
+H_GrpMore
+More
+更多
+#
 EXPORT_ASK_NAME
 Type a name for the exported files (STP / PDF / DWG). You may also type a full path to choose the folder. Esc cancels.
 请输入导出文件的名称（将用于 STP / PDF / DWG 三个文件），也可以直接输入完整路径指定存放位置；按回车确认，Esc 取消。
@@ -676,4 +708,260 @@ Creo 当前忙，请稍后再试。
 SESSION_CANCEL
 Cancelled.
 已取消。
+#
+H_Outline
+Outline Size
+轮廓尺寸
+#
+H_Outline.Help
+Reports the length, width and height of the current part or assembly (bounding box). In a drawing it uses the model behind the drawing.
+量出当前零件/装配的外形尺寸（长宽高）。在工程图里点会自动用该图对应的模型。
+#
+H_3dVis
+Show Control
+显示控制
+#
+H_3dVis.Help
+Hide, unhide, or show everything again.
+隐藏、取消隐藏、全部显示。
+#
+H_Hide
+Hide
+隐藏
+#
+H_Hide.Help
+Select the items to hide and press the middle mouse button to confirm.
+点选要隐藏的对象，按中键确认。
+#
+H_Unhide
+Unhide
+显示
+#
+H_Unhide.Help
+Select the items to show again and press the middle mouse button to confirm.
+点选要恢复显示的对象，按中键确认。
+#
+H_UnhideAll
+Unhide All
+全部显示
+#
+H_UnhideAll.Help
+Shows every hidden feature of the current model again.
+把当前模型里所有被隐藏的特征全部恢复显示。
+#
+H_Rename
+Rename
+重命名
+#
+H_Rename.Help
+Renames the current model; a drawing with the same name is renamed too.
+重命名当前模型，同名工程图会跟着改。
+#
+H_RandColor.Help
+Gives every component of the assembly a different color; the same part always gets the same color. Save the model to keep the colors.
+给装配里每个零件一个不同的颜色（同一个零件颜色相同）。想保留请存盘。
+#
+H_ClearColor
+Clear Color
+清除着色
+#
+H_ClearColor.Help
+Removes the colors applied by Random Color and goes back to the default appearance.
+清掉随机着色，恢复默认外观。
+#
+H_OpenInPlace
+Open In Place
+原位打开
+#
+H_OpenInPlace.Help
+Select a component; it opens in its own window with the current assembly orientation.
+点选一个元件，按装配当前的视角把它打开。
+#
+H_ViewNormal
+View Normal
+视图正归位
+#
+H_ViewNormal.Help
+Click to set the view upright from the model axes and fit it; pick a datum plane or flat surface first if you want normal-to-face.
+按模型坐标轴把视图摆正并自动缩放到合适距离；想垂直于某个面时，先选中该基准面或平面。
+#
+H_BatchBackup
+Bulk Backup
+批量备份
+#
+H_BatchBackup.Help
+Backs up the current model and all its dependent models to the folder you choose.
+把当前模型连同它引用的全部子模型一起备份到指定目录。
+#
+H_SimpRep
+Simp Rep
+简化助手
+#
+H_SimpRep.Help
+Picks a simplified representation of the current assembly and activates it.
+选一条简化表示并激活它。
+#
+TD_NOT_3D
+Open a part or an assembly first.
+请先打开零件或装配。
+#
+TD_ASSY_ONLY
+This command works in an assembly only.
+这个命令只能在装配里使用。
+#
+TD_CANCEL
+Cancelled.
+已取消。
+#
+TD_NOTHING_SEL
+Nothing selected.
+没有选中任何对象。
+#
+TD_OUTLINE_FAIL
+Failed to compute the outline.
+轮廓尺寸计算失败。
+#
+TD_HIDE_OK
+Selected items are hidden.
+已隐藏选中对象。
+#
+TD_HIDE_FAIL
+Failed to hide the selected items.
+隐藏失败。
+#
+TD_UNHIDE_OK
+Items are shown again.
+已恢复显示。
+#
+TD_UNHIDE_FAIL
+Failed to show the selected items.
+恢复显示失败。
+#
+TD_UNHIDE_NONE
+Nothing was hidden.
+没有需要恢复显示的项目。
+#
+TD_RENAME_ASK
+Enter the new model name and press Enter:
+输入新的模型名称后按回车：
+#
+TD_RENAME_OK
+Model renamed.
+已重命名。
+#
+TD_RENAME_FAIL
+Rename failed.
+重命名失败。
+#
+TD_COLOR_OK
+Colors applied. The colors live in the part files, so save the parts to keep them.
+着色完成；颜色写在零件里，零件也要存盘才保留。
+#
+TD_COLOR_CLR_OK
+Appearance cleared.
+外观已清除。
+#
+TD_COLOR_FAIL
+Failed to apply appearance.
+着色失败。
+#
+TD_OPENINPLACE_OK
+Component opened.
+已打开该元件。
+#
+TD_OPENINPLACE_FAIL
+Failed to open the component.
+打开元件失败。
+#
+TD_VIEWNORMAL_OK
+View set upright and fitted.
+视图已归位并调到合适距离。
+#
+TD_VIEWNORMAL_FAIL
+Failed to set the view. Pick a datum plane or a flat surface.
+设置视图失败，请拾取基准面或平面。
+#
+TD_VIEWNORMAL_NOPLANE
+Pick a datum plane or a flat surface first.
+请先拾取一个基准面或平面。
+#
+TD_BACKUP_OK
+Backup done.
+备份完成。
+#
+TD_BACKUP_FAIL
+Backup failed.
+备份失败。
+#
+TD_SIMPREP_OK
+Simplified representation activated.
+简化表示已激活。
+#
+TD_SIMPREP_FAIL
+Failed to activate the simplified representation.
+激活简化表示失败。
+#
+TD_PICK_HIDE
+Pick the items to hide, then click the middle mouse button.
+请点选要隐藏的对象，可以多选，点中键确认。
+#
+TD_PICK_UNHIDE
+Pick the hidden items to show again, then click the middle mouse button.
+请点选要重新显示的对象，可以多选，点中键确认。
+#
+TD_PICK_COMP
+Pick one component to open, then click the middle mouse button.
+请点选要单独打开的元件，点中键确认。
+#
+H_ToggleHide
+Toggle Hide
+反隐藏零件
+#
+H_HideAll
+Hide All
+全部隐藏
+#
+H_ColorAsm
+Random Colors
+随机着色
+#
+H_ToggleHide.Help
+Hide what is shown and show what is hidden.
+隐藏的显示出来，显示的隐藏掉。
+#
+H_HideAll.Help
+Hides all features and components.
+隐藏模型里的全部特征和元件。
+#
+H_ColorAsm.Help
+Colors each part with a bright random color. In an assembly, every component's part is colored; the same part gets the same color.
+给零件涂一个偏亮的随机色；装配里逐个元件给它的零件上色，同一零件同色。
+#
+TD_PICK_TIP
+Pick items, then click the middle mouse button.
+请点选对象，可以多选，点中键确认。
+#
+TD_PICK_ONE
+Pick one item, then click the middle mouse button.
+请点选一个对象，点中键确认。
+#
+TD_TOGGLE_OK
+Visibility toggled.
+已切换显示状态。
+#
+TD_TOGGLE_FAIL
+Failed to toggle visibility.
+切换显示状态失败。
+#
+TD_HIDEALL_OK
+All items are hidden.
+已全部隐藏。
+#
+TD_HIDEALL_NONE
+Nothing to hide.
+没有可以隐藏的对象。
+#
+TD_COLOR_PART_OK
+Color applied.
+已给当前模型着色。
 #

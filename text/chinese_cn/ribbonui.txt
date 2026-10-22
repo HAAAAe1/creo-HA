@@ -30,3 +30,10 @@ H_Annot
 #H_AnnotNote
 H_AnnotNote
 注解
+#H_3D
+H_3D
+3D
+
+#H_3dVis
+H_3dVis
+显示控制

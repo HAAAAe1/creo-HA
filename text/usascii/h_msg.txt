@@ -64,6 +64,30 @@ Compact all balloon numbers back to 1,2,3... (use it to close the gaps left afte
 Balloon
 Balloon
 #
+H_GrpSession
+Session
+#
+H_GrpInfo
+Model Info
+#
+H_GrpColor
+Colors
+#
+H_GrpView
+View
+#
+H_GrpVis
+Simplify
+#
+H_GrpDwg
+Drawing
+#
+H_GrpExport
+Export
+#
+H_GrpMore
+More
+#
 EXPORT_ASK_NAME
 Type a name for the exported files (STP / PDF / DWG). You may also type a full path to choose the folder. Esc cancels.
 #
@@ -507,4 +531,215 @@ Creo is busy, try again later.
 #
 SESSION_CANCEL
 Cancelled.
+#
+H_Outline
+Outline Size
+#
+H_Outline.Help
+Reports the length, width and height of the current part or assembly (bounding box). In a drawing it uses the model behind the drawing.
+#
+H_3dVis
+Show Control
+#
+H_3dVis.Help
+Hide, unhide, or show everything again.
+#
+H_Hide
+Hide
+#
+H_Hide.Help
+Select the items to hide and press the middle mouse button to confirm.
+#
+H_Unhide
+Show
+#
+H_Unhide.Help
+Select the items to show again and press the middle mouse button to confirm.
+#
+H_UnhideAll
+Unhide All
+#
+H_UnhideAll.Help
+Shows every hidden feature of the current model again.
+#
+H_Rename
+Rename
+#
+H_Rename.Help
+Renames the current model; a drawing with the same name is renamed too.
+#
+H_RandColor
+Random Color
+#
+H_RandColor.Help
+Gives every component of the assembly a different color; the same part always gets the same color. Save the model to keep the colors.
+#
+H_ClearColor
+Clear Color
+#
+H_ClearColor.Help
+Removes the colors applied by Random Color and goes back to the default appearance.
+#
+H_OpenInPlace
+Open In Place
+#
+H_OpenInPlace.Help
+Select a component; it opens in its own window with the current assembly orientation.
+#
+H_ViewNormal
+View Normal
+#
+H_ViewNormal.Help
+Click to set the view upright from the model axes and fit it; pick a datum plane or flat surface first if you want normal-to-face.
+#
+H_BatchBackup
+Bulk Backup
+#
+H_BatchBackup.Help
+Backs up the current model and all its dependent models to the folder you choose.
+#
+H_SimpRep
+Simp Rep
+#
+H_SimpRep.Help
+Picks a simplified representation of the current assembly and activates it.
+#
+TD_NOT_3D
+Open a part or an assembly first.
+#
+TD_ASSY_ONLY
+This command works in an assembly only.
+#
+TD_CANCEL
+Cancelled.
+#
+TD_NOTHING_SEL
+Nothing selected.
+#
+TD_OUTLINE_FAIL
+Failed to compute the outline.
+#
+TD_HIDE_OK
+Selected items are hidden.
+#
+TD_HIDE_FAIL
+Failed to hide the selected items.
+#
+TD_UNHIDE_OK
+Items are shown again.
+#
+TD_UNHIDE_FAIL
+Failed to show the selected items.
+#
+TD_UNHIDE_NONE
+Nothing was hidden.
+#
+TD_RENAME_ASK
+Enter the new model name and press Enter:
+#
+TD_RENAME_OK
+Model renamed.
+#
+TD_RENAME_FAIL
+Rename failed.
+#
+TD_COLOR_OK
+Colors applied. The colors live in the part files, so save the parts to keep them.
+#
+TD_COLOR_CLR_OK
+Appearance cleared.
+#
+TD_COLOR_FAIL
+Failed to apply appearance.
+#
+TD_OPENINPLACE_OK
+Component opened.
+#
+TD_OPENINPLACE_FAIL
+Failed to open the component.
+#
+TD_VIEWNORMAL_OK
+View set upright and fitted.
+#
+TD_VIEWNORMAL_FAIL
+Failed to set the view. Pick a datum plane or a flat surface.
+#
+TD_VIEWNORMAL_NOPLANE
+Pick a datum plane or a flat surface first.
+#
+TD_BACKUP_OK
+Backup done.
+#
+TD_BACKUP_FAIL
+Backup failed.
+#
+TD_SIMPREP_OK
+Simplified representation activated.
+#
+TD_SIMPREP_FAIL
+Failed to activate the simplified representation.
+#
+TD_PICK_HIDE
+Pick the items to hide, then click the middle mouse button.
+Pick the items to hide, then click the middle mouse button.
+#
+TD_PICK_UNHIDE
+Pick the hidden items to show again, then click the middle mouse button.
+Pick the hidden items to show again, then click the middle mouse button.
+#
+TD_PICK_COMP
+Pick one component to open, then click the middle mouse button.
+Pick one component to open, then click the middle mouse button.
+#
+H_ToggleHide
+Toggle Hide
+Toggle Hide
+#
+H_HideAll
+Hide All
+Hide All
+#
+H_ColorAsm
+Random Colors
+Random Colors
+#
+H_ToggleHide.Help
+Hide what is shown and show what is hidden.
+Hide what is shown and show what is hidden.
+#
+H_HideAll.Help
+Hides all features and components.
+Hides all features and components.
+#
+H_ColorAsm.Help
+Colors each part with a bright random color. In an assembly, every component's part is colored; the same part gets the same color.
+Colors each part with a bright random color. In an assembly, every component's part is colored; the same part gets the same color.
+#
+TD_PICK_TIP
+Pick items, then click the middle mouse button.
+Pick items, then click the middle mouse button.
+#
+TD_PICK_ONE
+Pick one item, then click the middle mouse button.
+Pick one item, then click the middle mouse button.
+#
+TD_TOGGLE_OK
+Visibility toggled.
+Visibility toggled.
+#
+TD_TOGGLE_FAIL
+Failed to toggle visibility.
+Failed to toggle visibility.
+#
+TD_HIDEALL_OK
+All items are hidden.
+All items are hidden.
+#
+TD_HIDEALL_NONE
+Nothing to hide.
+Nothing to hide.
+#
+TD_COLOR_PART_OK
+Color applied.
+Color applied.
 #
