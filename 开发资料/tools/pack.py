@@ -6,14 +6,14 @@
     python 开发资料\\tools\\pack.py 2026-10-23      # 指定包名里的日期/标签
 
 产物：D:\\H\\开发资料\\dist\\H_<标签>.zip
-      zip 里根目录叫 H/，解开就是给人看的样子：
+      zip 里根目录叫 H/，解开就是给人看的样子（只有装插件要用的东西）：
         H.dat  H.dll  setup.bat
         text\\  templates\\  symbols\\
         安装说明_超简单版.txt   安装步骤.png
         功能说明.txt           功能说明_A4.png
-        开发资料\\              （源码、工具、构建脚本、LICENSE、README）
 
-不发出去的：编译产物、日志、dist、__pycache__、tools 里的调试截图。
+不发出去的：开发资料\\（源码、工具、构建脚本、LICENSE、README —— 这些走 GitHub）、
+            编译产物、日志、dist、__pycache__、tools 里的调试截图。
 """
 import datetime
 import os
@@ -30,7 +30,7 @@ KEEP_FILES = [
     "功能说明.txt", "功能说明_A4.png",
 ]
 KEEP_DIRS = ["text", "templates", "symbols"]
-DEV_DIR = "开发资料"                  # 整个搬进 H\开发资料\
+DEV_DIR = "开发资料"                  # 开发文件：不进包，只留在 GitHub 仓库
 
 SKIP_DIRS = {"dist", "__pycache__", ".idea", ".vscode"}
 SKIP_EXT = {".obj", ".exp", ".lib", ".pdb", ".ilk", ".res", ".zip"}
@@ -80,9 +80,6 @@ def main():
             p = os.path.join(ROOT, d)
             if os.path.isdir(p):
                 add_tree(z, p, d, n)
-        dev = os.path.join(ROOT, DEV_DIR)
-        if os.path.isdir(dev):
-            add_tree(z, dev, DEV_DIR, n)
 
     print("打包完成：%s" % out)
     print("  条目 %d 个，%.2f MB" % (n[0], os.path.getsize(out) / 1048576.0))
