@@ -1,6 +1,8 @@
 @echo off
 chcp 936 >nul
 setlocal
+set "HDLL=%~dp0..\H.dll"
+if not exist "%HDLL%" set "HDLL=%~dp0H.dll"
 cd /d "%~dp0"
 
 echo ==============================================================
@@ -18,7 +20,7 @@ echo  重要：每次重新编译 H.dll 之后，都要再跑一次本工具。
 echo ==============================================================
 echo.
 
-if not exist "%~dp0H.dll" (
+if not exist "%HDLL%" (
     echo [错误] 本文件夹里没有 H.dll，请先编译。
     echo.
     pause
@@ -83,7 +85,7 @@ echo.
 echo  正在解锁（会占用一个 TOOLKIT 许可，约几秒）...
 echo.
 
-call "%UNLOCK%" "%~dp0H.dll"
+call "%UNLOCK%" "%HDLL%"
 set "RC=%ERRORLEVEL%"
 
 echo.
