@@ -10,6 +10,7 @@
 
 不打进去的（对照 .gitignore）：
     .git/ dist/ tools/ __pycache__/ h_load.log eq_curve.txt
+    .gitignore .gitattributes .gitmodules
     *.obj *.exp *.lib *.pdb *.ilk *.res
 """
 import datetime
@@ -21,7 +22,11 @@ ROOT = r"D:\H"
 TOP = "H"                            # zip 内的根目录名：跟 D 盘上的目录同名，不改名
 SKIP_DIRS = {".git", "dist", "tools", "__pycache__", ".idea", ".vscode"}
 SKIP_EXT = {".obj", ".exp", ".lib", ".pdb", ".ilk", ".res", ".zip"}
-SKIP_FILES = {"h_load.log", "eq_curve.txt", "Thumbs.db", "desktop.ini"}
+SKIP_FILES = {
+    "h_load.log", "eq_curve.txt", "Thumbs.db", "desktop.ini",
+    # 开发用的仓库文件，不发给别人
+    ".gitignore", ".gitattributes", ".gitmodules",
+}
 
 
 def main():
