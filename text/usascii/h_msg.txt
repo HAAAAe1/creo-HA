@@ -538,6 +538,12 @@ Outline Size
 H_Outline.Help
 Reports the length, width and height of the current part or assembly (bounding box). In a drawing it uses the model behind the drawing.
 #
+H_CopyName
+Copy Name
+#
+H_CopyName.Help
+Copies the name of the current active model (NAME.EXT) to the Windows clipboard: assembly name in an assembly, part name in a part, drawing name in a drawing.
+#
 H_3dVis
 Show Control
 #
@@ -598,11 +604,32 @@ Bulk Backup
 H_BatchBackup.Help
 Backs up the current model and all its dependent models to the folder you choose.
 #
-H_SimpRep
-Simp Rep
+H_EqCurve
+Equation Curve
 #
-H_SimpRep.Help
-Picks a simplified representation of the current assembly and activates it.
+H_EqCurve.Help
+Creates a datum curve from an equation template. Note: the equation curve is an OPEN spline (end points coincide but are not topologically closed) - project it onto the target surface before trimming.
+#
+TD_EQ_NOTEMPLATE
+No equation file yet. A template was created and opened; edit it, then click this button again.
+#
+TD_EQ_EMPTY
+The equation is empty. Write at least one line below the # header lines.
+#
+TD_EQ_NOCSYS
+No datum coordinate system in the model. Create one first.
+#
+TD_EQ_OK
+Curve created from equation.
+#
+TD_EQ_FAIL
+Failed to create the curve. See h_load.log for the failing element.
+#
+TD_EQ_PROBE_OK
+Diagnostic: the plain equation worked but yours did not, so the coordinate system is fine and the equation text is the problem. A probe curve named EQ_PROBE was created; delete it when done.
+#
+TD_EQ_SELFTEST
+The curve was created but failed to regenerate, so the equation itself is at fault. A built-in equation test has run; results are in h_load.log (test curves were deleted automatically).
 #
 TD_NOT_3D
 Open a part or an assembly first.
@@ -673,12 +700,6 @@ Backup done.
 TD_BACKUP_FAIL
 Backup failed.
 #
-TD_SIMPREP_OK
-Simplified representation activated.
-#
-TD_SIMPREP_FAIL
-Failed to activate the simplified representation.
-#
 TD_PICK_HIDE
 Pick the items to hide, then click the middle mouse button.
 Pick the items to hide, then click the middle mouse button.
@@ -715,6 +736,14 @@ H_ColorAsm.Help
 Colors each part with a bright random color. In an assembly, every component's part is colored; the same part gets the same color.
 Colors each part with a bright random color. In an assembly, every component's part is colored; the same part gets the same color.
 #
+TD_PICK_HIDE_TIP
+Pick items to hide; each pick takes effect at once. Press ESC to finish.
+Pick items to hide; each pick takes effect at once. Press ESC to finish.
+#
+TD_PICK_SHOW_TIP
+Pick items to show; each pick takes effect at once. Press ESC to finish.
+Pick items to show; each pick takes effect at once. Press ESC to finish.
+#
 TD_PICK_TIP
 Pick items, then click the middle mouse button.
 Pick items, then click the middle mouse button.
@@ -743,3 +772,46 @@ TD_COLOR_PART_OK
 Color applied.
 Color applied.
 #
+H_OpenViewInPlace
+Open In Place
+#
+H_OpenViewInPlace.Help
+Select a drawing view; opens the 3D model in its own window, oriented exactly like that view.
+#
+H_Open3D
+Open 3D
+#
+H_Open3D.Help
+Opens the 3D model behind the drawing in its own window without changing its orientation. If a view is selected, that view's model is opened.
+#
+OPENVIEW_NO_DRAWING
+This command works in a drawing only.
+#
+OPENVIEW_NO_VIEW
+Please select a drawing view first.
+#
+OPENVIEW_FAIL
+Cannot open: the model of that view could not be retrieved.
+#
+OPENVIEW_SETDIR_FAIL
+3D model opened, but its orientation could not be matched to the drawing view: the orientation of this view type may not be readable, or the view is mirrored.
+#
+OPENVIEW_OK
+3D model opened in its own window, oriented like the selected view.
+#
+OPEN3D_NO_DRAWING
+This command works in a drawing only.
+#
+OPEN3D_NOMDL
+No 3D model is associated with this drawing.
+#
+OPEN3D_FAIL
+Failed to open a window for the 3D model.
+#
+OPEN3D_OK
+3D model opened in its own window (orientation unchanged).
+#
+
+#
+H_CmdDesc
+H plug-in command

@@ -1,5 +1,6 @@
 # 运行时生成
 h_load.log
+eq_curve.txt
 
 # 编译产物
 *.obj
@@ -11,3 +12,12 @@ h_load.log
 
 # 打包
 *.zip
+
+# 工具目录里的临时图（icon_sheet.png 是图标总览，保留）
+tools/__pycache__/
+tools/crop_right.png
+tools/large_preview.png
+tools/view_cands.png
+tools/zoom6.png
+tools/zoom_alt.png
+tools/tmp_*.png

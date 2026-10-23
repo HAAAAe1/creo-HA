@@ -717,6 +717,14 @@ H_Outline.Help
 Reports the length, width and height of the current part or assembly (bounding box). In a drawing it uses the model behind the drawing.
 量出当前零件/装配的外形尺寸（长宽高）。在工程图里点会自动用该图对应的模型。
 #
+H_CopyName
+Copy Name
+复制名称
+#
+H_CopyName.Help
+Copies the name of the current active model (NAME.EXT) to the Windows clipboard: assembly name in an assembly, part name in a part, drawing name in a drawing.
+把当前活动模型的名称（名称.扩展名）复制到 Windows 剪贴板：装配里复制装配名，零件里复制零件名，工程图里复制图纸名。
+#
 H_3dVis
 Show Control
 显示控制
@@ -793,13 +801,41 @@ H_BatchBackup.Help
 Backs up the current model and all its dependent models to the folder you choose.
 把当前模型连同它引用的全部子模型一起备份到指定目录。
 #
-H_SimpRep
-Simp Rep
-简化助手
+H_EqCurve
+Equation Curve
+方程曲线
 #
-H_SimpRep.Help
-Picks a simplified representation of the current assembly and activates it.
-选一条简化表示并激活它。
+H_EqCurve.Help
+Creates a datum curve from an equation template. Note: the equation curve is an OPEN spline (end points coincide but are not topologically closed) - project it onto the target surface before trimming.
+按方程模板生成基准曲线。注意：方程曲线是开放样条（首尾两点重合但不闭合），要修剪请先用「投影」投到目标曲面上。
+#
+TD_EQ_NOTEMPLATE
+No equation file yet. A template was created and opened; edit it, then click this button again.
+还没有方程文件。已生成模板并打开，改完保存后再点一次本按钮。
+#
+TD_EQ_EMPTY
+The equation is empty. Write at least one line below the # header lines.
+方程是空的，请在 # 开头的头两行下面写方程。
+#
+TD_EQ_NOCSYS
+No datum coordinate system in the model. Create one first.
+模型里没有坐标系，请先建一个基准坐标系。
+#
+TD_EQ_OK
+Curve created from equation.
+方程曲线已生成。
+#
+TD_EQ_FAIL
+Failed to create the curve. See h_load.log for the failing element.
+生成曲线失败，具体出错元素见 h_load.log。
+#
+TD_EQ_PROBE_OK
+Diagnostic: the plain equation worked but yours did not, so the coordinate system is fine and the equation text is the problem. A probe curve named EQ_PROBE was created; delete it when done.
+诊断：最简方程能建成，说明坐标系没问题，是方程文本本身不被接受。已建一条测试曲线 EQ_PROBE，看完可删掉。
+#
+TD_EQ_SELFTEST
+The curve was created but failed to regenerate, so the equation itself is at fault. A built-in equation test has run; results are in h_load.log (test curves were deleted automatically).
+曲线建出来了但重新生成失败，问题在方程写法。已自动跑一遍内置方程测试，结果在 h_load.log（测试曲线已自动删除）。
 #
 TD_NOT_3D
 Open a part or an assembly first.
@@ -893,14 +929,6 @@ TD_BACKUP_FAIL
 Backup failed.
 备份失败。
 #
-TD_SIMPREP_OK
-Simplified representation activated.
-简化表示已激活。
-#
-TD_SIMPREP_FAIL
-Failed to activate the simplified representation.
-激活简化表示失败。
-#
 TD_PICK_HIDE
 Pick the items to hide, then click the middle mouse button.
 请点选要隐藏的对象，可以多选，点中键确认。
@@ -937,6 +965,14 @@ H_ColorAsm.Help
 Colors each part with a bright random color. In an assembly, every component's part is colored; the same part gets the same color.
 给零件涂一个偏亮的随机色；装配里逐个元件给它的零件上色，同一零件同色。
 #
+TD_PICK_HIDE_TIP
+Pick items to hide; each pick takes effect at once. Press ESC to finish.
+点选要隐藏的对象，点中即隐藏，连点连藏，按 ESC 结束。
+#
+TD_PICK_SHOW_TIP
+Pick items to show; each pick takes effect at once. Press ESC to finish.
+点选要恢复显示的对象，点中即生效，连点连做，按 ESC 结束。
+#
 TD_PICK_TIP
 Pick items, then click the middle mouse button.
 请点选对象，可以多选，点中键确认。
@@ -965,3 +1001,60 @@ TD_COLOR_PART_OK
 Color applied.
 已给当前模型着色。
 #
+H_OpenViewInPlace
+Open In Place
+原位打开
+#
+H_OpenViewInPlace.Help
+Select a drawing view; opens the 3D model in its own window, oriented exactly like that view.
+选中一个工程图视图，把对应的 3D 模型在独立窗口中打开，朝向与该视图完全一致。
+#
+H_Open3D
+Open 3D
+打开3D
+#
+H_Open3D.Help
+Opens the 3D model behind the drawing in its own window without changing its orientation. If a view is selected, that view's model is opened.
+把这张工程图对应的 3D 模型在独立窗口中打开，不改变方向；若已选中某个视图，则打开该视图对应的模型。
+#
+OPENVIEW_NO_DRAWING
+This command works in a drawing only.
+此命令只能在工程图中使用。
+#
+OPENVIEW_NO_VIEW
+Please select a drawing view first.
+请先选择一个工程图视图。
+#
+OPENVIEW_FAIL
+Cannot open: the model of that view could not be retrieved.
+打开失败：取不到该视图对应的模型或视图方向。
+#
+OPENVIEW_SETDIR_FAIL
+3D model opened, but its orientation could not be matched to the drawing view: the orientation of this view type may not be readable, or the view is mirrored.
+3D 模型已打开，但方向没能对上：该视图类型的方向可能读不出来，或者它是镜像视图。
+#
+OPENVIEW_OK
+3D model opened in its own window, oriented like the selected view.
+已按选中视图的方向打开 3D 模型（独立窗口）。
+#
+OPEN3D_NO_DRAWING
+This command works in a drawing only.
+此命令只能在工程图中使用。
+#
+OPEN3D_NOMDL
+No 3D model is associated with this drawing.
+这张图纸没有关联的 3D 模型。
+#
+OPEN3D_FAIL
+Failed to open a window for the 3D model.
+打开 3D 模型窗口失败。
+#
+OPEN3D_OK
+3D model opened in its own window (orientation unchanged).
+已打开图纸对应的 3D 模型（方向保持不变）。
+#
+
+#
+H_CmdDesc
+H plug-in command
+H 插件命令

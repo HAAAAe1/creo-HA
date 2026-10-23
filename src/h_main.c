@@ -52,8 +52,13 @@
 #include <ProGeomitemdata.h>
 #include <ProAsmcomp.h>
 #include <ProAsmcomppath.h>
-#include <ProSimprep.h>
 #include <ProFeatType.h>
+#include <ProFeature.h>
+#include <ProElement.h>
+#include <ProReference.h>
+#include <ProDtmCrv.h>
+#include <ProCsys.h>
+#include <ProCsysdata.h>
 #include <ProUIMessage.h>
 
 /* 注：这里曾经有一大段直接调 Win32 的「Esc 监听 + 光标离开图形区监听」代码，
@@ -124,6 +129,7 @@
 #define CMD_KEYDIM  "H_KeyDim"
 #define CMD_KEYDIMC "H_KeyDimClear"
 #define CMD_OUTLINE      "H_Outline"
+#define CMD_COPYNAME     "H_CopyName"   /* 复制模型名到剪贴板（模型信息组） */
 #define CMD_HIDE         "H_Hide"
 #define CMD_UNHIDE       "H_Unhide"
 #define CMD_UNHIDEALL    "H_UnhideAll"
@@ -135,8 +141,15 @@
 #define CMD_CLEARCOLOR   "H_ClearColor"
 #define CMD_OPENINPLACE  "H_OpenInPlace"
 #define CMD_VIEWNORMAL   "H_ViewNormal"
+/* 工程图页的两个命令（2026-10-23）：
+     H_OpenViewInPlace = 原位打开：选中一个图纸视图 -> 按【该视图的方向】打开 3D；
+     H_Open3D          = 打开 3D  ：打开图纸对应的 3D 模型，【不动方向】。
+   注意与 H_OpenInPlace 区分：那个是 3D 页的"装配里选中元件 -> 用装配当前视角
+   把该零件单独开一个窗口"，语义不同，命令名也必须是新的。 */
+#define CMD_OPENVIEWINPLACE "H_OpenViewInPlace"
+#define CMD_OPEN3D          "H_Open3D"
 #define CMD_BATCHBACKUP  "H_BatchBackup"
-#define CMD_SIMPREP      "H_SimpRep"
+#define CMD_EQCRV        "H_EqCurve"
 
 #define CMD_OPENWORKDIR "H_OpenWorkDir"
 #define CMD_SETWORKDIR  "H_SetWorkDir"
@@ -3767,7 +3780,6 @@ static int HScaleCustomAct(uiCmdCmdId command, uiCmdValue *p_value, void *p_push
   · 清除着色   对零件外观传 NULL = 恢复默认外观
   · 原位打开   记住装配当前视图矩阵 -> 打开零件 -> 把矩阵套上去
   · 批量备份   ProMdlnameBackup（连带全部从属模型）
-  · 简化助手   ProSimprepSelect 让用户挑一条简化表示 -> 激活
 \*=====================================================================*/
 
 /* 取当前要操作的 3D 模型：
@@ -4063,6 +4075,178 @@ static int HOutlineAct(uiCmdCmdId command, uiCmdValue *p_value,
     return 0;
 }
 
+/*-------------- 3. 复制模型名称到剪贴板（2026-10-23 新增） -------------
+   用途：把当前模型的名字（含扩展名，如 PRT0006.PRT）放进 Windows 剪贴板，
+         贴到 Excel、邮件、资源管理器重命名框里都不用再手敲。
+         取的就是「当前活动模型」：装配复制装配名，零件复制零件名，图纸复制图纸名。
+         不看选择集 —— 手边选着什么不影响结果，装配里也一样。
+
+   ★ 剪贴板三条硬规矩（踩过的人不少，这里一次性写死）：
+     1) OpenClipboard(NULL) 挂到调用线程自己的窗口；插件命令跑在 Creo 主
+        线程，能拿到。返回 FALSE 说明剪贴板正被别的程序占用（Office、输入法、
+        剪贴板管理器都比想象中频繁），等 60ms 重试一次，还不行才报失败。
+     2) ★ SetClipboardData 成功后，那块 HGLOBAL 的所有权就交给系统了，
+        绝对不能再 GlobalFree —— 否则系统剪贴板内容被提前释放，之后每次
+        粘贴都可能随机失败，且不报错。
+     3) 只放 CF_UNICODETEXT。用 CF_TEXT 的话中文模型名会变成乱码。
+   ------------------------------------------------------------------ */
+static int HClipPutW(const wchar_t *s)
+{
+    HGLOBAL hg;
+    size_t  cb;
+    LPVOID  p;
+    int     ok = 0;
+
+    if (s == NULL || s[0] == L'\0')
+        return 0;
+
+    cb = (wcslen(s) + 1) * sizeof(wchar_t);
+    hg = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, cb);
+    if (hg == NULL)
+    {
+        HLog("HClipPutW: GlobalAlloc(%u) failed\n", (unsigned)cb);
+        return 0;
+    }
+
+    p = GlobalLock(hg);
+    if (p == NULL)
+    {
+        HLog("HClipPutW: GlobalLock failed\n");
+        GlobalFree(hg);
+        return 0;
+    }
+    memcpy(p, s, cb);
+    GlobalUnlock(hg);
+
+    if (!OpenClipboard(NULL))
+    {
+        /* 剪贴板经常被别的程序瞬间占着（Office、输入法、各种剪贴板管理器），
+           等 60ms 再试一次命中率明显提高；仍然失败才认输。 */
+        HLog("HClipPutW: OpenClipboard busy, retry after 60ms\n");
+        Sleep(60);
+        if (!OpenClipboard(NULL))
+        {
+            HLog("HClipPutW: OpenClipboard failed twice, err=%lu\n",
+                 (unsigned long)GetLastError());
+            GlobalFree(hg);
+            return 0;
+        }
+    }
+
+    /* 必须先 EmptyClipboard，否则旧内容一直留着，粘贴出来还是上一次的 */
+    if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, hg) != NULL)
+    {
+        ok = 1;
+    }
+    else
+    {
+        HLog("HClipPutW: empty/set failed, err=%lu\n",
+             (unsigned long)GetLastError());
+    }
+    CloseClipboard();
+
+    if (!ok)
+        GlobalFree(hg);         /* 只有没交出去才由自己回收 */
+
+    HLog("HClipPutW: len=%d ok=%d\n", (int)wcslen(s), ok);
+    return ok;
+}
+
+static int HCopyNameAct(uiCmdCmdId command, uiCmdValue *p_value,
+                        void *p_push_command_data)
+{
+    ProMdl         mdl = NULL;
+    ProMdlType     type = PRO_MDL_UNUSED;
+    ProMdlName     nm;
+    ProMdlExtension ext;
+    ProPath        origin;
+    wchar_t        full[PRO_MDLNAME_SIZE + PRO_MDLEXTENSION_SIZE + 4];
+    wchar_t        msg[1400];
+    const wchar_t *ts = L"模型";
+    int            ok;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    /* 只认当前活动模型，不看选择集 —— 用户不该因为手边恰好还选着某个元件，
+       就复制到别的名字。装配复制装配名，零件复制零件名，
+       工程图就复制图纸名（DRW…），不取图纸背后的模型。
+       ★ 与同组另两个按钮「重命名」「轮廓尺寸」不同：那两个走 HGetSolid3D，
+         在图纸里会自动落到图纸背后的模型上；这里刻意不用它 —— 用户要的就是
+         图纸本身的名字。 */
+    if (ProMdlCurrentGet(&mdl) != PRO_TK_NO_ERROR)
+        mdl = NULL;
+
+    if (mdl == NULL)
+    {
+        HLog("HCopyNameAct: no current model\n");
+        HUiInfoW(L"Copy Name / 复制名称",
+                 L"当前没有打开的模型。\n\n请先打开一个零件 / 装配 / 工程图再点这个按钮。");
+        return 0;
+    }
+
+    nm[0]  = L'\0';
+    ext[0] = L'\0';
+    if (ProMdlMdlnameGet(mdl, nm) != PRO_TK_NO_ERROR || nm[0] == L'\0')
+    {
+        HLog("HCopyNameAct: ProMdlMdlnameGet failed\n");
+        HUiInfoW(L"Copy Name / 复制名称", L"取不到模型名称，详见 h_load.log。");
+        return 0;
+    }
+
+    /* 扩展名拿不到不影响主体，退化成纯名 */
+    if (ProMdlExtensionGet(mdl, ext) != PRO_TK_NO_ERROR)
+        ext[0] = L'\0';
+
+    /* 统一成 NAME.EXT。
+       ProMdlExtensionGet 一般回 "PRT"（不带点），但个别版本/多 CAD 模型
+       会带点或带回空，所以这里两种都兼容，避免出现 "A..PRT" 或 "A.PRT.PRT" */
+    if (ext[0] == L'\0')
+        swprintf(full, sizeof(full) / sizeof(full[0]), L"%ls", nm);
+    else if (ext[0] == L'.')
+        swprintf(full, sizeof(full) / sizeof(full[0]), L"%ls%ls", nm, ext);
+    else
+        swprintf(full, sizeof(full) / sizeof(full[0]), L"%ls.%ls", nm, ext);
+
+    if (ProMdlTypeGet(mdl, &type) == PRO_TK_NO_ERROR)
+    {
+        switch (type)
+        {
+        case PRO_MDL_PART:     ts = L"零件"; break;
+        case PRO_MDL_ASSEMBLY: ts = L"装配"; break;
+        case PRO_MDL_DRAWING:  ts = L"工程图"; break;
+        case PRO_MDL_LAYOUT:   ts = L"布局"; break;
+        default:               ts = L"模型"; break;
+        }
+    }
+
+    origin[0] = L'\0';
+    if (ProMdlOriginGet(mdl, origin) != PRO_TK_NO_ERROR)
+        origin[0] = L'\0';
+
+    ok = HClipPutW(full);
+    HLogW("HCopyNameAct: copied name = ", full);
+
+    if (ok)
+    {
+        swprintf(msg, sizeof(msg) / sizeof(msg[0]),
+                 L"已复制到剪贴板：\n\n%ls\n\n类型：%ls\n目录：%ls",
+                 full, ts,
+                 (origin[0] != L'\0') ? origin : L"（尚未保存到磁盘）");
+    }
+    else
+    {
+        swprintf(msg, sizeof(msg) / sizeof(msg[0]),
+                 L"复制失败：剪贴板被其他程序占用。\n\n名称是：%ls\n\n"
+                 L"等一秒把正在复制的窗口关掉，再点一次即可。",
+                 full);
+    }
+
+    HUiInfoW(L"Copy Name / 复制名称", msg);
+    return 0;
+}
+
 /*-------------------------- 2. 隐藏 / 取消隐藏 --------------------------*/
 /*----------------------- 2. 显示控制（4 个命令） -----------------------
   ★ ProModelitemHide/Unhide 的参数是【层项目】。官方示例
@@ -4221,15 +4405,88 @@ static void HVisRegenerate(char *tag)
     HLog("%s: treeRefresh -> %d\n", tag, (int)e);
 }
 
+/* ============ 「选中就生效」的连点拾取 ============
+   2026-10-23 用户要求：隐藏/显示"不要确认这一步，选中就隐藏"。
+   ProSelect 默认在选满之后还要等用户按中键（Done），这一步无法从
+   ProSelect 的参数里去掉，但可以用【选择环境】关掉：
+     · PRO_SELECT_DONE_REQUIRED = 0  ⇒ 选满 max_count 立即返回，不等 Done
+     · PRO_SELECT_HIDE_SEL_DLG = 1   ⇒ 不弹"选择"浮动面板（那个也要确认）
+   两个属性在 ProSelection.h:167-172 的 ProSelectionEnvAttr 里，
+   用 ProSelectionEnvAlloc(array, count, &env) 组装（注意是普通数组 + 个数，
+   不是 ProArray），用完 ProSelectionEnvFree。
+   有了 DONE_REQUIRED=0，每轮只选 1 个就立刻返回 ⇒ 点中即隐藏；
+   外面套一层循环 ⇒ 连点连藏，ESC / 中键退出。 */
+#define H_VIS_PICK_MAX  200
+
+static void HVisPickLoop(int mode, char *tag, int *p_ok, int *p_fail)
+{
+    static char *filters[3] = { "prt_or_asm",
+                                "part,asm,feature",
+                                "feature" };
+    ProSelectionEnvOption envopts[2];
+    ProSelectionEnv       env = NULL;
+    int                   i, f;
+
+    envopts[0].attribute = PRO_SELECT_DONE_REQUIRED;
+    envopts[0].value     = PRO_B_FALSE;      /* 不等 Done */
+    envopts[1].attribute = PRO_SELECT_HIDE_SEL_DLG;
+    envopts[1].value     = PRO_B_TRUE;       /* 不弹选择面板 */
+    if (ProSelectionEnvAlloc(envopts, 2, &env) != PRO_TK_NO_ERROR)
+        env = NULL;
+    HLog("%s: pickEnv -> %s\n", tag, env != NULL ? "ok" : "alloc failed");
+
+    for (i = 0; i < H_VIS_PICK_MAX; i++)
+    {
+        ProSelection *sels   = NULL;
+        ProError      status = PRO_TK_BAD_INPUTS;
+        int           n      = 0;
+
+        /* 过滤器按优先级降级：只有"报错"才换下一个 */
+        for (f = 0; f < 3; f++)
+        {
+            sels   = NULL;
+            n      = 0;
+            status = ProSelect(filters[f], 1, NULL, NULL, env, NULL,
+                               &sels, &n);
+            HLog("%s: loop ProSelect(\"%s\") -> %d, n=%d\n", tag, filters[f],
+                 (int)status, n);
+            if (status == PRO_TK_NO_ERROR)
+                break;
+        }
+        if (status != PRO_TK_NO_ERROR || n <= 0 || sels == NULL)
+            break;                            /* ESC / Quit / 什么都没选 */
+
+        if (HVisFromSelection(sels[0], mode, tag))
+            (*p_ok)++;
+        else
+            (*p_fail)++;
+
+        sels = NULL;                          /* ProSelect 静态内存，只能置空 */
+        ProWindowRepaint(PRO_VALUE_UNUSED);   /* 立刻看到效果 */
+    }
+
+    if (env != NULL)
+        ProSelectionEnvFree(env);
+}
+
 static int HVisRun(int mode, char *tag)
 {
     ProSelection *sels = NULL;
     int           n = 0, i, ok = 0, fail = 0;
 
-    if (!HSelectItems(-1, tag, &sels, &n))
+    /* ① 先看预选：用户在图上选好再点按钮 ⇒ 直接处理，一个框都不弹 */
+    if (HSelbufferOnly(tag, &sels, &n))
     {
-        HMsg("TD_NOTHING_SEL");
-        return 0;
+        HLog("%s: use preselect n=%d\n", tag, n);
+    }
+    else
+    {
+        /* ② 没有预选：进入连点模式，选中即生效 */
+        HMsg(mode == H_VIS_SHOW ? "TD_PICK_SHOW_TIP" : "TD_PICK_HIDE_TIP");
+        HVisPickLoop(mode, tag, &ok, &fail);
+        sels = NULL;
+        n    = 0;
+        goto finish;
     }
 
     for (i = 0; i < n; i++)
@@ -4242,6 +4499,7 @@ static int HVisRun(int mode, char *tag)
     HSelectFree(sels);
     sels = NULL;
 
+finish:
     HVisRegenerate(tag);
     ProWindowRepaint(PRO_VALUE_UNUSED);
     HLog("%s: ok=%d fail=%d mode=%d\n", tag, ok, fail, mode);
@@ -4467,6 +4725,8 @@ typedef struct h_color_ctx
     int    seen_feat;                    /* 遍历到的特征数（诊断） */
     int    comp_ok;                      /* 认出来的元件数（诊断） */
     int    part_ok;                      /* 写成功的零件数（成功判定） */
+    double hue_base;                     /* 本次命令的色相起点（随机） */
+    int    hue_idx;                      /* 色相缓存针（黄金角步进） */
 } HColorCtx;
 
 static void HHsvToRgb(double h, double s, double v, ProVector rgb)
@@ -4496,9 +4756,19 @@ static void HHsvToRgb(double h, double s, double v, ProVector rgb)
 }
 
 /* ============ 随机色生成 ============
-   ① 每会话只 srand 一次：连点（<16ms）不会落同一 tick 复读同一套色；
-   ② h/s/v 全随机，避免只换色相时相邻色相看着一样；
-   ③ 2026-10-22 用户要求「调亮点」：明度提到 0.90~0.99，饱和度 0.50~0.89。 */
+   2026-10-23 改版（用户反馈「颜色有点暗，随机性不够强」）：
+   ① 色相不再纯 rand —— 改成【黄金角步进】0.6180339887 铺开：
+      n 个零件天然均匀分布在色环上，任意相邻两个相差约 222°，不会撞色、
+      也不会出现「一片同色系」；起点 hue_base 每次命令随机 ⇒ 每次点整体配色不同。
+   ② 饱和度提到 0.55~1.00（原 0.50~0.89）、明度拉到 0.95~1.00，更艳、区分更明显。
+   ③ 感知亮度保底：HSV 的 V 是 max(R,G,B)，纯蓝 V=1 时 Rec.709 luma 只有 0.07，
+      看起来就是「暗」。这里按 luma 给暗色补白，补到 0.42 为止；补白量封顶 0.45，
+      避免蓝紫全部变成粉彩、反而更没区分度。
+   ④ 每会话只 srand 一次（原有逻辑保留）：连点（<16ms）不会落同一 tick 复读。 */
+#define H_COLOR_HUE_STEP   0.618033988749895   /* 黄金分割共轭 */
+#define H_COLOR_MIN_LUMA   0.50                /* 感知亮度下限 */
+#define H_COLOR_MAX_WHITE  0.55                /* 补白量上限（防粉彩化） */
+
 static int h_color_seeded = 0;
 
 static void HColorSeedOnce(void)
@@ -4510,13 +4780,43 @@ static void HColorSeedOnce(void)
     }
 }
 
-static void HColorRandRgb(ProVector rgb)
+static double HLuma(ProVector c)
 {
-    double h = (double)(rand() % 3600) / 3600.0;
-    double s = 0.50 + (double)(rand() % 400) / 1000.0;   /* 0.50 ~ 0.89 */
-    double v = 0.90 + (double)(rand() % 100) / 1000.0;   /* 0.90 ~ 0.99 */
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+
+static void HColorRandRgb(HColorCtx *ctx, ProVector rgb)
+{
+    double h, s, v, lum, t;
+    int    i;
+
+    /* 1) 色相：黄金角铺开 + ±7° 抖动（抖动要远小于步进，不破坏均匀性） */
+    h  = ctx->hue_base + H_COLOR_HUE_STEP * (double)ctx->hue_idx;
+    h += ((double)(rand() % 400) / 10000.0) - 0.02;
+    ctx->hue_idx++;
+    h = h - floor(h);
+
+    /* 2) 饱和度 / 明度：高饱和 + 高亮 */
+    s = 0.55 + (double)(rand() % 450) / 1000.0;   /* 0.550 ~ 0.999 */
+    v = 0.95 + (double)(rand() % 60) / 1000.0;    /* 0.950 ~ 1.000 */
+    if (s > 1.0) s = 1.0;
+    if (v > 1.0) v = 1.0;
 
     HHsvToRgb(h, s, v, rgb);
+
+    /* 3) 感知亮度保底 */
+    lum = HLuma(rgb);
+    if (lum < H_COLOR_MIN_LUMA && lum < 0.999)
+    {
+        t = (H_COLOR_MIN_LUMA - lum) / (1.0 - lum);
+        if (t > H_COLOR_MAX_WHITE)
+            t = H_COLOR_MAX_WHITE;
+        for (i = 0; i < 3; i++)
+            rgb[i] = rgb[i] + t * (1.0 - rgb[i]);
+    }
+
+    HLog("HColorRandRgb: h=%.3f s=%.3f v=%.3f luma=%.3f -> rgb=(%.3f %.3f %.3f)\n",
+         h, s, v, lum, rgb[0], rgb[1], rgb[2]);
 }
 
 /* 按 idx 组装一套外观属性（颜色来自 done_rgb[idx]，同一零件同色） */
@@ -4526,8 +4826,11 @@ static void HColorBuildProps(HColorCtx *ctx, int idx,
     int k = (idx >= 0 && idx < ctx->n_done) ? idx : 0;
 
     memset(props, 0, sizeof(*props));
-    props->ambient      = 0.30;
-    props->diffuse      = 0.70;
+    /* 2026-10-23：用户反馈偏暗 ⇒ 环境光从 0.30 提到 0.55、漫反射降到 0.45
+       （两者仍合计 1.0）。ambient 不受光照方向影响，背光面不会再发黑，
+       这是颜色看着「暗」的主要来源之一。 */
+    props->ambient      = 0.55;
+    props->diffuse      = 0.45;
     props->highlite     = 0.30;
     props->shininess    = 0.20;
     props->transparency = 0.00;
@@ -4554,7 +4857,7 @@ static int HColorIndexOf(HColorCtx *ctx, ProMdl mdl)
     if (ctx->n_done >= H_COLOR_MAX_MDL - 1)
         return ctx->n_done - 1;
     ctx->done[ctx->n_done] = mdl;
-    HColorRandRgb(ctx->done_rgb[ctx->n_done]);
+    HColorRandRgb(ctx, ctx->done_rgb[ctx->n_done]);
     return ctx->n_done++;
 }
 
@@ -4722,6 +5025,11 @@ static int HColorRun(int mode, char *tag)
     ctx.mode = mode;
     HColorSeedOnce();                 /* 整个会话只 srand 一次，避免连点同色 */
 
+    /* 色相起点随机：每次点「随机着色」，整套配色都换一个方向重排 */
+    ctx.hue_base = (double)(rand() % 10000) / 10000.0;
+    ctx.hue_idx  = 0;
+    HLog("HColorRun: hue_base=%.4f step=%.6f\n", ctx.hue_base, H_COLOR_HUE_STEP);
+
     HColorOneMdl(mdl, &ctx);
     HLog("%s: mode=%d parts=%d fail=%d feats=%d comps=%d ok=%d\n",
          tag, mode, ctx.n_done, ctx.fail, ctx.seen_feat, ctx.comp_ok,
@@ -4796,7 +5104,6 @@ static int HOpenInPlaceAct(uiCmdCmdId command, uiCmdValue *p_value,
     ProSelection *sels    = NULL;
     int           n = 0;
     ProModelitem  item;
-    ProAsmcomp    comp;
     ProAsmcomppath path;
     ProMdl        sub = NULL;
     ProMdlName    mname;
@@ -4828,43 +5135,48 @@ static int HOpenInPlaceAct(uiCmdCmdId command, uiCmdValue *p_value,
         return 0;
     }
 
-    /* ★ ProSelectionModelitemGet 对元件选择返回的是"零件模型"
-       (PRO_PART, id=0)，直接转 ProAsmcomp 再 ProAsmcompMdlGet 必失败
-       （实测日志 compMdlGet failed）。正确路子（与隐藏功能同一模式）：
-       先用 ProSelectionAsmcomppathGet 拿元件路径，重建
-       {PRO_FEATURE, comp_id, owner} —— 这个组合才被接受。 */
-    memset(&comp, 0, sizeof(comp));
+    /* ★ 取"选中的那个元件对应的模型"，唯一可靠的路子是 ProAsmcomppathMdlGet。
+       ProSelectionAsmcomppathGet 给的 path 是【从顶层装配出发的完整元件 id 链】
+       （ProAsmcomppath.h 里 ProAsmcomppathInit 写明 owner = 顶层装配），
+       所以 path.comp_id_table[table_num-1] 只是"最深层父装配里的元件 id"。
+       旧代码把它和 owner=顶层装配 拼成一个 ProAsmcomp 去 ProAsmcompMdlGet，
+       等于在【顶层装配】里找一个同 id 的元件 —— 嵌套一深必然串到别的元件
+       （多半是个子装配），这就是"点零件却打开装配图"的根因；
+       顶层里没有那个 id 时就是日志里的 compMdlGet failed。 */
     memset(&path, 0, sizeof(path));
+    status = PRO_TK_GENERAL_ERROR;
     if (ProSelectionAsmcomppathGet(sels[0], &path) == PRO_TK_NO_ERROR
         && path.table_num > 0 && path.owner != NULL)
     {
-        comp.type  = PRO_FEATURE;
-        comp.id    = path.comp_id_table[path.table_num - 1];
-        comp.owner = (ProMdl)path.owner;
-        HLog("HOpenInPlaceAct: ascomp id=%d depth=%d\n", comp.id,
-             path.table_num);
+        HLog("HOpenInPlaceAct: path depth=%d last_id=%d\n",
+             path.table_num, path.comp_id_table[path.table_num - 1]);
+        status = ProAsmcomppathMdlGet(&path, &sub);
+        HLog("HOpenInPlaceAct: pathMdlGet -> %d\n", (int)status);
     }
-    else if (ProSelectionModelitemGet(sels[0], &item) == PRO_TK_NO_ERROR)
+    /* 兜底：对"元件"的选择，ProModelitem 里的 owner 就是那个元件模型本身 */
+    if ((status != PRO_TK_NO_ERROR || sub == NULL)
+        && ProSelectionModelitemGet(sels[0], &item) == PRO_TK_NO_ERROR
+        && item.owner != NULL)
     {
-        comp = *(ProAsmcomp *)&item;
-        HLog("HOpenInPlaceAct: direct type=%d id=%d\n", (int)item.type,
-             item.id);
-    }
-    else
-    {
-        HSelectFree(sels);
-        sels = NULL;
-        HMsg("TD_OPENINPLACE_FAIL");
-        return 0;
+        sub    = item.owner;
+        status = PRO_TK_NO_ERROR;
+        HLog("HOpenInPlaceAct: fallback item.owner type=%d id=%d\n",
+             (int)item.type, item.id);
     }
     HSelectFree(sels);
     sels = NULL;
 
-    if (ProAsmcompMdlGet(&comp, &sub) != PRO_TK_NO_ERROR || sub == NULL)
+    if (status != PRO_TK_NO_ERROR || sub == NULL)
     {
-        HLog("HOpenInPlaceAct: compMdlGet failed\n");
+        HLog("HOpenInPlaceAct: model resolve failed\n");
         HMsg("TD_OPENINPLACE_FAIL");
         return 0;
+    }
+    {
+        ProMdlType rt = PRO_MDL_UNUSED;
+        if (ProMdlTypeGet(sub, &rt) == PRO_TK_NO_ERROR)
+            HLog("HOpenInPlaceAct: target type=%d (asm=%d part=%d)\n",
+                 (int)rt, (int)PRO_MDL_ASSEMBLY, (int)PRO_MDL_PART);
     }
 
     /* ---- 1. 装配当前视图矩阵 V（归一化后才能跨窗口使用） ---- */
@@ -4943,18 +5255,300 @@ static int HOpenInPlaceAct(uiCmdCmdId command, uiCmdValue *p_value,
     return 0;
 }
 
+/*----------------- 6a-2. 工程图：原位打开 / 打开 3D -----------------*/
+/* 2026-10-23 新增。工程图页的两个命令：
+     · 原位打开：选中一个图纸视图 -> 把该视图对应的 3D 模型放进【它自己的
+       窗口】打开，并把 3D 视图的朝向设成与这张图纸视图完全一致。
+     · 打开 3D ：同上，但【不动朝向】，只把模型调出来看。
+
+   ★ 为什么不能直接 ProMdlDisplay：
+     模型若还没有自己的窗口，ProMdlDisplay 会把它塞进【当前窗口】，也就是
+     把工程图窗口顶掉（图纸一消失，之前摆好的视图位置全白调）。所以一律
+     先拿到模型自己的窗口 id（已有就复用，没有才建），再 Display + Activate。
+     这一套与 6a 的 HOpenInPlaceAct 完全一致。
+
+   ★ 朝向矩阵的来源：ProViewMatrixGet(drawing, view, m)
+     返回的是"模型坐标 -> 逻辑屏幕"的行向量矩阵（位移在第 3 行，比例在
+     3x3 里）。归一化（去掉图纸比例、去掉图纸原点位移）之后把 3x3 旋转
+     直接 ProViewMatrixSet 到 3D 模型上，得到的就是同一个观察方向。
+     ProViewMatrixSet 要求"每行长度 1"，未归一化会直接返回 -2。 */
+
+/* 只读选择缓冲区里的那一个视图，不弹选择（供「打开 3D」用）。
+   缓冲区数组必须 ProSelectionarrayFree（它会连每个成员一起释放）；
+   这里不保留任何 ProSelection，所以直接释放是安全的。 */
+static int HOpenViewFromBuffer(ProView *p_view)
+{
+    ProSelection *sels = NULL;
+    int           n = 0;
+
+    *p_view = NULL;
+    if (ProSelbufferSelectionsGet(&sels) != PRO_TK_NO_ERROR || sels == NULL)
+        return 0;
+    ProArraySizeGet(sels, &n);
+    if (n == 1)
+        ProSelectionViewGet(sels[0], p_view);
+    ProSelectionarrayFree(sels);
+    return (*p_view != NULL);
+}
+
+/* 把模型放进"它自己的窗口"并激活。成功返回窗口 id，失败 -1。
+   已有窗口就直接复用（ProMdlWindowGet），不重复开窗。 */
+static int HOpenMdlOwnWindow(ProMdl mdl)
+{
+    ProMdlName mname;
+    ProMdlType mtype = PRO_MDL_UNUSED;
+    ProType    otype = PRO_PART;
+    int        win   = -1;
+    ProError   status = PRO_TK_GENERAL_ERROR;
+
+    if (ProMdlWindowGet(mdl, &win) == PRO_TK_NO_ERROR && win >= 0)
+    {
+        HLog("HOpenMdlOwnWindow: reuse win=%d\n", win);
+    }
+    else
+    {
+        win = -1;
+        memset(mname, 0, sizeof(mname));
+        if (ProMdlMdlnameGet(mdl, mname) != PRO_TK_NO_ERROR)
+            return -1;
+        if (ProMdlTypeGet(mdl, &mtype) == PRO_TK_NO_ERROR
+            && mtype == PRO_MDL_ASSEMBLY)
+            otype = PRO_ASSEMBLY;
+        status = ProObjectwindowMdlnameCreate(mname, otype, &win);
+        HLog("HOpenMdlOwnWindow: create -> %d win=%d\n", (int)status, win);
+        if (win < 0)
+            return -1;
+    }
+
+    ProMdlDisplay(mdl);
+    ProWindowCurrentSet(win);   /* 同步模式：切当前窗口 */
+    ProWindowActivate(win);     /* 异步模式有效；同步下失败无害 */
+    return win;
+}
+
+/* 取一个图纸视图：先看选择缓冲区；缓冲区里没有视图（或选着别的东西），
+   清掉缓冲区后直接让用户点一次。
+   ★ 为什么不用 HSelectItemsF：它在"用户按 Esc 取消"时也返回 0，
+     拿不到"是取消还是缓冲区里不是视图"，会被我这里的兜底再弹一次选择框。
+     这里的语义很简单 —— 缓冲区有视图就用，否则就选一次。 */
+static int HOpenPickView(char *tag, ProView *p_view)
+{
+    ProSelection *sels = NULL;
+    int           n = 0;
+    ProError      status;
+
+    *p_view = NULL;
+
+    if (HOpenViewFromBuffer(p_view))
+    {
+        HLog("%s: view from selection buffer\n", tag);
+        return 1;
+    }
+
+    ProSelbufferClear();          /* 缓冲区里那个不是视图（例如一条尺寸），清掉 */
+    n      = 0;
+    status = ProSelect((char*)"dwg_view", 1, NULL, NULL, NULL, NULL, &sels, &n);
+    HLog("%s: ProSelect(dwg_view) -> %d n=%d\n", tag, (int)status, n);
+    if (status == PRO_TK_NO_ERROR && n >= 1 && sels != NULL)
+        ProSelectionViewGet(sels[0], p_view);
+    return (*p_view != NULL);
+}
+
+static uiCmdAccessState HOpenViewAccess(uiCmdAccessMode access_mode)
+{
+    (void)access_mode;
+    return ACCESS_AVAILABLE;
+}
+
+static int HOpenViewInPlaceAct(uiCmdCmdId command, uiCmdValue *p_value,
+                               void *p_push_command_data)
+{
+    ProMdl     dwg_mdl = NULL;
+    ProView    view    = NULL;
+    ProSolid   solid   = NULL;
+    ProMatrix  mtx;
+    double     scale;
+    double     det;
+    ProError   status;
+    ProError   st2;
+    int        win;
+    int        vid;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    if (HGetDrawing(&dwg_mdl) != PRO_TK_NO_ERROR)
+    {
+        HMsg("OPENVIEW_NO_DRAWING");
+        return 0;
+    }
+
+    if (!HOpenPickView("HOpenViewInPlaceAct", &view))
+    {
+        HMsg("OPENVIEW_NO_VIEW");
+        return 0;
+    }
+
+    /* 1. 视图对应的 3D 模型（简化视图也返回正常模型指针） */
+    status = ProDrawingViewSolidGet((ProDrawing)dwg_mdl, view, &solid);
+    HLog("HOpenViewInPlaceAct: viewSolidGet -> %d solid=%p\n",
+         (int)status, (void*)solid);
+    if (status != PRO_TK_NO_ERROR || solid == NULL)
+    {
+        HMsg("OPENVIEW_FAIL");
+        return 0;
+    }
+
+    /* 2. 视图朝向矩阵，归一化成纯旋转
+       ★★ 2026-10-23 实测（h_load.log）：
+            viewSolidGet -> 0  solid=0000023606C91458
+            matrixGet    -> -1
+          原因是【选择集给出来的 ProView 不能直接喂 ProViewMatrixGet】——
+          那是"选中项"口径的句柄，不是视图对象本身。正确路线是先拿
+          view_id（ProDrawingViewIdGet），再用 ProDrawingViewInit 换一次
+          正式视图句柄，然后才取矩阵。两条都留着并各自记日志，
+          极端视图（比如图纸视图）若仍取不到，只影响方向，不影响开窗。 */
+    memset(mtx, 0, sizeof(mtx));
+    scale  = 0.0;
+    status = PRO_TK_GENERAL_ERROR;
+    vid    = -1;
+
+    st2 = ProDrawingViewIdGet((ProDrawing)dwg_mdl, view, &vid);
+    HLog("HOpenViewInPlaceAct: viewIdGet -> %d id=%d\n", (int)st2, vid);
+    if (st2 == PRO_TK_NO_ERROR)
+    {
+        ProView v2 = NULL;
+
+        st2 = ProDrawingViewInit((ProDrawing)dwg_mdl, vid, &v2);
+        HLog("HOpenViewInPlaceAct: viewInit -> %d view=%p\n", (int)st2, (void*)v2);
+        if (st2 == PRO_TK_NO_ERROR && v2 != NULL)
+        {
+            status = ProViewMatrixGet(dwg_mdl, v2, mtx);
+            HLog("HOpenViewInPlaceAct: matrixGet(init) -> %d\n", (int)status);
+        }
+    }
+    if (status != PRO_TK_NO_ERROR)
+    {
+        memset(mtx, 0, sizeof(mtx));
+        status = ProViewMatrixGet(dwg_mdl, view, mtx);
+        HLog("HOpenViewInPlaceAct: matrixGet(sel) -> %d\n", (int)status);
+    }
+
+    scale = sqrt(mtx[0][0] * mtx[0][0] + mtx[0][1] * mtx[0][1]
+               + mtx[0][2] * mtx[0][2]);
+    HLog("HOpenViewInPlaceAct: matrixGet -> %d scale=%.5f\n",
+         (int)status, scale);
+    if (status != PRO_TK_NO_ERROR || scale < 1e-9)
+    {
+        /* 方向读不出来（该视图类型不支持矩阵读取等）：
+           仍然把 3D 开出来，只是不套方向，并明确告知。
+           不能整条命令报失败 —— 用户要的"看到这个零件"已经办到了。 */
+        HLog("HOpenViewInPlaceAct: no usable matrix, open without orientation\n");
+        if (HOpenMdlOwnWindow((ProMdl)solid) < 0)
+        {
+            HMsg("OPENVIEW_FAIL");
+            return 0;
+        }
+        HMsg("OPENVIEW_SETDIR_FAIL");
+        return 0;
+    }
+    HMatrixNormalize(mtx);
+    /* det < 0 => 该视图是镜像视图，3D 里没有等价朝向，套上去会左右反；
+       日志里留一行，出问题时一眼能看出是"视图本身镜像"而不是代码算错。 */
+    det = mtx[0][0] * (mtx[1][1] * mtx[2][2] - mtx[1][2] * mtx[2][1])
+        - mtx[0][1] * (mtx[1][0] * mtx[2][2] - mtx[1][2] * mtx[2][0])
+        + mtx[0][2] * (mtx[1][0] * mtx[2][1] - mtx[1][1] * mtx[2][0]);
+    HLog("HOpenViewInPlaceAct: det=%.4f (负=镜像视图)\n", det);
+    HLog("HOpenViewInPlaceAct: R=(%.3f %.3f %.3f | %.3f %.3f %.3f | %.3f %.3f %.3f)\n",
+         mtx[0][0], mtx[0][1], mtx[0][2],
+         mtx[1][0], mtx[1][1], mtx[1][2],
+         mtx[2][0], mtx[2][1], mtx[2][2]);
+
+    /* 3. 在它自己的窗口里打开 */
+    win = HOpenMdlOwnWindow((ProMdl)solid);
+    if (win < 0)
+    {
+        HMsg("OPENVIEW_FAIL");
+        return 0;
+    }
+
+    /* 4. 套方向 */
+    status = ProViewMatrixSet((ProMdl)solid, NULL, mtx);
+    HLog("HOpenViewInPlaceAct: matrixSet -> %d\n", (int)status);
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    /* 模型已经开出来了，只是方向没套上（镜像视图等） —— 单独给一句提示，
+       否则用户会以为整条命令失败了。 */
+    HMsg(status == PRO_TK_NO_ERROR ? "OPENVIEW_OK" : "OPENVIEW_SETDIR_FAIL");
+    return 0;
+}
+
+static int HOpen3DAct(uiCmdCmdId command, uiCmdValue *p_value,
+                      void *p_push_command_data)
+{
+    ProMdl     dwg_mdl = NULL;
+    ProView    view    = NULL;
+    ProSolid   solid   = NULL;
+    ProError   status;
+    int        win;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    if (HGetDrawing(&dwg_mdl) != PRO_TK_NO_ERROR)
+    {
+        HMsg("OPEN3D_NO_DRAWING");
+        return 0;
+    }
+
+    /* 选着一个视图就打开该视图的模型（一张图纸带多个模型时常用）；
+       没选就用图纸的"当前模型"。 */
+    if (HOpenViewFromBuffer(&view) && view != NULL)
+    {
+        status = ProDrawingViewSolidGet((ProDrawing)dwg_mdl, view, &solid);
+        HLog("HOpen3DAct: viewSolidGet -> %d\n", (int)status);
+        if (status != PRO_TK_NO_ERROR)
+            solid = NULL;
+    }
+    if (solid == NULL)
+    {
+        status = ProDrawingCurrentsolidGet((ProDrawing)dwg_mdl, &solid);
+        HLog("HOpen3DAct: currentSolidGet -> %d solid=%p\n",
+             (int)status, (void*)solid);
+        if (status != PRO_TK_NO_ERROR || solid == NULL)
+        {
+            HMsg("OPEN3D_NOMDL");
+            return 0;
+        }
+    }
+
+    win = HOpenMdlOwnWindow((ProMdl)solid);
+    if (win < 0)
+    {
+        HMsg("OPEN3D_FAIL");
+        return 0;
+    }
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    HMsg("OPEN3D_OK");
+    return 0;
+}
+
 /*--------------------------- 6b. 视图正归位 --------------------------*/
 /* 2026-10-22 新增，同日改版：**以坐标轴为基准**（不再要求先拾取基准面）。
    1) 方向 n 的来源：
       · 用户预先选了平面/基准面 → 垂直于该面（n = 面法向，朝观察者）；
-      · 什么都没选 → 世界坐标轴 FRONT 正视，n = (0,-1,0)
-        （观察者在 -Y 侧朝 +Y 看 ⇒ 屏幕右 +X、屏幕上 +Z），一点就归位。
+      · 什么都没选 → 观察者在 -X 侧朝 +X 看，n = (-1,0,0)，参考轴 = (0,0,-1)
+        ⇒ 屏幕右 -Z、屏幕上 -Y（2026-10-23 用户定稿「逆时针 90°」）。
    2) 视图矩阵 M[2] = n —— 屏幕 Z 轴（指向观察者）；
       M[0] = 参考世界轴在垂直于 n 的平面内的投影（画面不歪头）；
       M[1] = M[2] × M[0]（右手系）；
-   3) Set 之后 ProWindowRefit ⇒ 自动调距离（模型充满窗口）。
-   矩阵语义见 ProView.h：行向量约定 v_view = v_world * M，
-   M[0]=屏幕X、M[1]=屏幕Y、M[2]=屏幕Z（朝观察者）。
+   3) 距离分两步：Set 之后【无条件】ProWindowRefit（Set 在矩阵未变时会跳过
+      自带的适配，这是「第一次缩放完后面不再缩放」的根因），再交给
+      HViewFitSolidOnly 做基准修正：k = 含基准包围盒 ÷ 实体包围盒 × HFIT_FILL，
+      k≈1 就什么都不做。线性缩放写回 pan/zoom 矩阵，旋转一个元素都不动。
+   矩阵语义见 ProView.h：ProViewMatrixSet 要求"每行长度 1、底行 0,0,0,1"，
+   即行向量约定 v_screen = v_model · M，M[0]=屏幕X、M[1]=屏幕Y、M[2]=屏幕Z（朝观察者）。
    ★ 基准平面在内部就是一个 ProSurface（ProSurface.h 有 ProSurfaceIsDatumPlane
      为证），但 ProGeomitemdataGet 不收 PRO_DATUM_PLANE，
      所以基准面走 ProSurfaceInit(owner, id) 再取数据这条路。 */
@@ -4969,6 +5563,21 @@ static void HVecNormalize(ProVector v)
         v[1] /= len;
         v[2] /= len;
     }
+}
+
+/* ★ 2026-10-23 用户实测：选中一个面点正归位，看到的是该面的【背面】。
+   原因：曲面几何数据里的法向（平面 e3 轴 / 参数化法向）并不等于
+   「朝观察者」那一侧 —— Creo 的曲面朝向是内部参数化约定，与视觉正反无关。
+   这里统一取反，让选中的面正对观察者。若以后又反了，把宏改成 0。 */
+#define HVIEWNORMAL_FACE_FLIP  1
+
+static void HFlipFaceNormal(ProVector n)
+{
+    if (!HVIEWNORMAL_FACE_FLIP)
+        return;
+    n[0] = -n[0];
+    n[1] = -n[1];
+    n[2] = -n[2];
 }
 
 /* 曲面法向。uv 传 NULL 时取参数域中点（平面直接用局部系的 e3）。 */
@@ -5064,8 +5673,9 @@ static int HPlaneNormalFromSel(ProSelection sel, ProMdl mdl, ProVector n)
             n[2] = sd->srf_shape.plane.e3[2];
             ProGeomitemdataFree(&pdata);
             HVecNormalize(n);
-            HLog("HPlaneNormalFromSel: A-plane n=(%.3f %.3f %.3f)\n",
-                 n[0], n[1], n[2]);
+            HFlipFaceNormal(n);
+            HLog("HPlaneNormalFromSel: A-plane n=(%.3f %.3f %.3f) (flipped=%.0f)\n",
+                 n[0], n[1], n[2], (double)HVIEWNORMAL_FACE_FLIP);
             if (fabs(n[0]) + fabs(n[1]) + fabs(n[2]) > 1e-9)
                 return 1;
         }
@@ -5091,8 +5701,300 @@ static int HPlaneNormalFromSel(ProSelection sel, ProMdl mdl, ProVector n)
         return 0;
 
     if (HSurfNormalGet(surf, have_uv ? uv : NULL, n))
+    {
+        HFlipFaceNormal(n);
+        HLog("HPlaneNormalFromSel: surf normal flipped -> (%.3f %.3f %.3f)\n",
+             n[0], n[1], n[2]);
         return 1;
+    }
     return 0;
+}
+
+/*------------------ 6b-0. 视角自检 + 只按实体适配距离 ------------------*/
+/* 2026-10-23 起因（用户截图“出现了 3 个坐标”）：
+   模型里离实体很远的基准坐标系会把 ProWindowRefit 的包围盒撑大 ——
+   Creo 的坐标符号按【固定屏幕尺寸】绘制，不随缩放变小，于是实体被缩成
+   一个点，屏幕上只剩三个坐标符号。这里改成：距离只按【实体几何】算，
+   四类基准（平面/点/坐标系/轴）一律排除在包围盒之外。
+
+   ★「角度怎么确认」—— 这是本段的核心：
+   Creo 会把自身的缩放乘进视图矩阵的三个行向量（实测行长度 33.764），
+   所以【必须先把每行除以自己的长度归一化】，再去和期望的旋转逐元素比，
+   否则永远对不上、看起来像“角度又跑了”。另外校验 det(R) = +1，
+   出现 -1 就是镜像（画面翻面）。这两项都由 HRotCheckLog 打进日志。 */
+
+#define HFIT_USE_REFIT  0   /* 1 = 退回原来的 ProWindowRefit（连基准一起框） */
+
+/* 2026-10-23 用户反馈「大小也不对，第一次缩放完后面不缩放了」。
+   根因：ProViewMatrixSet 只在视图矩阵【发生变化】时才重算 shift+scaling，
+   连点同一个矩阵它就直接跳过 ⇒ 用户中途滚轮缩放过之后，点正归位不恢复。
+   修法：Set 之后【无条件】再调一次 ProWindowRefit(win)，强制重算距离；
+   refit 只改平移/缩放、不改旋转，随后用 rotcheck 验证。
+   HFIT_FILL 是最后的微调旋钮：1.00 = Creo 标准适配（留一点边距），
+   > 1 放大、< 1 缩小；改成某个值后不管 k 多少都会应用一次。 */
+#define HFIT_FILL       1.00
+
+static void HMatIdentity(ProMatrix m)
+{
+    int i, j;
+
+    for (i = 0; i < 4; i++)
+        for (j = 0; j < 4; j++)
+            m[i][j] = (i == j) ? 1.0 : 0.0;
+}
+
+/* 把轴对齐包围盒的 8 个角投影到 (u, v) 两根轴上，
+   返回 {umin, umax, vmin, vmax}。 */
+static void HBoxProject(double box[2][3], const ProVector u, const ProVector v,
+                        double r[4])
+{
+    int    i, j;
+    double p[3], du, dv;
+
+    for (i = 0; i < 8; i++)
+    {
+        for (j = 0; j < 3; j++)
+            p[j] = box[(i >> j) & 1][j];
+        du = p[0] * u[0] + p[1] * u[1] + p[2] * u[2];
+        dv = p[0] * v[0] + p[1] * v[1] + p[2] * v[2];
+        if (i == 0)
+        {
+            r[0] = r[1] = du;
+            r[2] = r[3] = dv;
+        }
+        else
+        {
+            if (du < r[0]) r[0] = du;
+            if (du > r[1]) r[1] = du;
+            if (dv < r[2]) r[2] = dv;
+            if (dv > r[3]) r[3] = dv;
+        }
+    }
+}
+
+/* 诊断：把模型里所有基准坐标系（PRO_FEAT_CSYS）的原点与轴向打进日志。
+   用来回答「屏幕上那几个 XYZ 三轴到底是什么、有几个、在哪」——
+   Creo 画坐标符号是【固定屏幕尺寸】，不随缩放变小，所以它们很显眼。 */
+typedef struct
+{
+    ProMdl mdl;
+    int    count;
+} HCsysScanCtx;
+
+static ProError HCsysScanVisit(ProFeature *feat, ProError status, ProAppData app)
+{
+    HCsysScanCtx    *sc = (HCsysScanCtx *)app;
+    ProFeattype      ftype = 0;
+    ProCsys          csys  = NULL;
+    ProGeomitemdata *pdata = NULL;
+    ProCsysdata     *cd;
+
+    if (status != PRO_TK_NO_ERROR || feat == NULL || sc == NULL)
+        return PRO_TK_NO_ERROR;
+    if (ProFeatureTypeGet(feat, &ftype) != PRO_TK_NO_ERROR
+        || ftype != PRO_FEAT_CSYS)
+        return PRO_TK_NO_ERROR;
+
+    sc->count++;
+    if (ProCsysInit((ProSolid)sc->mdl, feat->id, &csys) != PRO_TK_NO_ERROR
+        || csys == NULL)
+    {
+        HLog("csys scan: #%d id=%d  csysInit failed\n", sc->count, feat->id);
+        return PRO_TK_NO_ERROR;
+    }
+    if (ProCsysDataGet(csys, &pdata) != PRO_TK_NO_ERROR || pdata == NULL)
+    {
+        HLog("csys scan: #%d id=%d  dataGet failed\n", sc->count, feat->id);
+        return PRO_TK_NO_ERROR;
+    }
+    cd = pdata->data.p_csys_data;
+    if (cd != NULL)
+        HLog("csys scan: #%d id=%d origin=(%.2f %.2f %.2f) "
+             "x=(%.2f %.2f %.2f) y=(%.2f %.2f %.2f) z=(%.2f %.2f %.2f)\n",
+             sc->count, feat->id,
+             cd->origin[0], cd->origin[1], cd->origin[2],
+             cd->x_vector[0], cd->x_vector[1], cd->x_vector[2],
+             cd->y_vector[0], cd->y_vector[1], cd->y_vector[2],
+             cd->z_vector[0], cd->z_vector[1], cd->z_vector[2]);
+    ProGeomitemdataFree(&pdata);
+    return PRO_TK_NO_ERROR;
+}
+
+static void HDatumCsysScan(ProMdl mdl)
+{
+    HCsysScanCtx sc;
+
+    sc.mdl   = mdl;
+    sc.count = 0;
+    ProSolidFeatVisit((ProSolid)mdl, HCsysScanVisit, NULL, (ProAppData)&sc);
+    HLog("csys scan: model has %d datum coordinate system(s)\n", sc.count);
+}
+
+/* 回读视图矩阵 → 归一化 → 与期望旋转逐元素比对 → 打印 maxdev 与 det。
+   返回值 < 0 表示回读失败；否则返回最大元素偏差。 */
+static double HRotCheckLog(ProMdl mdl, ProMatrix expect, const char *tag)
+{
+    ProMatrix c;
+    double    s[3], dev = 0.0, det;
+    int       i, j;
+
+    memset(c, 0, sizeof(ProMatrix));
+    if (ProViewMatrixGet(mdl, NULL, c) != PRO_TK_NO_ERROR)
+    {
+        HLog("rotcheck[%s]: matrixGet failed\n", tag);
+        return -1.0;
+    }
+
+    for (i = 0; i < 3; i++)
+    {
+        s[i] = sqrt(c[i][0] * c[i][0] + c[i][1] * c[i][1] + c[i][2] * c[i][2]);
+        if (s[i] < 1e-12)
+        {
+            HLog("rotcheck[%s]: row %d degenerate len=%.6f\n", tag, i, s[i]);
+            return -1.0;
+        }
+        for (j = 0; j < 3; j++)
+            c[i][j] /= s[i];
+    }
+
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++)
+            if (fabs(c[i][j] - expect[i][j]) > dev)
+                dev = fabs(c[i][j] - expect[i][j]);
+
+    det = c[0][0] * (c[1][1] * c[2][2] - c[1][2] * c[2][1])
+        - c[0][1] * (c[1][0] * c[2][2] - c[1][2] * c[2][0])
+        + c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0]);
+
+    HLog("rotcheck[%s]: scale=(%.4f %.4f %.4f) maxdev=%.5f det=%+.4f "
+         "r0=(%.3f %.3f %.3f) r1=(%.3f %.3f %.3f) r2=(%.3f %.3f %.3f)%s\n",
+         tag, s[0], s[1], s[2], dev, det,
+         c[0][0], c[0][1], c[0][2],
+         c[1][0], c[1][1], c[1][2],
+         c[2][0], c[2][1], c[2][2],
+         (dev > 1e-3 || det < 0.0) ? "  <<< ANGLE MISMATCH" : "  [angle ok]");
+    return dev;
+}
+
+/* 只按实体几何适配距离（基准不参与）。失败就原样返回，不影响角度。 */
+static void HViewFitSolidOnly(ProMdl mdl, ProMatrix rot, int win)
+{
+    ProMatrix idm, pz;
+    double    bd[2][3], bs[2][3];
+    double    pd[4], ps[4];
+    double    du, dv, su, sv, ku, kv, k, s0, sc;
+    double    cx, cy, cz, dev;
+    int       i, j;
+    ProError  st;
+
+    HMatIdentity(idm);
+
+    /* 1) 「含基准」的世界轴包围盒 —— 这就是 Creo refit 的口径 */
+    memset(bd, 0, sizeof(bd));
+    st = ProSolidDispoutlineGet((ProSolid)mdl, idm, bd);
+    HLog("fit: dispoutline -> %d  (%.3f %.3f %.3f) - (%.3f %.3f %.3f)\n",
+         (int)st, bd[0][0], bd[0][1], bd[0][2], bd[1][0], bd[1][1], bd[1][2]);
+    if (st != PRO_TK_NO_ERROR)
+        return;
+
+    /* 2) 「纯几何」的世界轴包围盒（官方：不含基准、注释等非几何项） */
+    memset(bs, 0, sizeof(bs));
+    st = ProSolidOutlineGet((ProSolid)mdl, bs);
+    HLog("fit: solidoutline -> %d  (%.3f %.3f %.3f) - (%.3f %.3f %.3f)\n",
+         (int)st, bs[0][0], bs[0][1], bs[0][2], bs[1][0], bs[1][1], bs[1][2]);
+    if (st != PRO_TK_NO_ERROR)
+        return;
+
+    /* 3) 两个包围盒各自投影到屏幕的 (r0, r1) 上，比出该放大多少倍 */
+    HBoxProject(bd, rot[0], rot[1], pd);
+    HBoxProject(bs, rot[0], rot[1], ps);
+    du = pd[1] - pd[0];  dv = pd[3] - pd[2];
+    su = ps[1] - ps[0];  sv = ps[3] - ps[2];
+    HLog("fit: disp extent u=%.3f v=%.3f | solid extent u=%.3f v=%.3f\n",
+         du, dv, su, sv);
+    if (su < 1e-9 || sv < 1e-9 || du < 1e-9 || dv < 1e-9)
+    {
+        HLog("fit: degenerate extent, skip\n");
+        return;
+    }
+
+    ku = du / su;
+    kv = dv / sv;
+    k  = ((ku > kv) ? ku : kv) * HFIT_FILL;
+    if (k < 0.05)
+        k = 0.05;
+    if (k > 500.0)
+        k = 500.0;
+    HLog("fit: k=%.4f (ku=%.4f kv=%.4f fill=%.3f)\n", k, ku, kv, HFIT_FILL);
+    if (k > 0.98 && k < 1.02)
+    {
+        HLog("fit: solid already fills the view, keep as is\n");
+        return;
+    }
+
+    /* 4) 取当前 pan/zoom 矩阵，认格式：若不是 [s·R | t] 那一套就不动 */
+    memset(pz, 0, sizeof(pz));
+    st = ProWindowCurrentMatrixGet(pz);
+    HLog("fit: panzoomGet -> %d\n", (int)st);
+    HLog("fit: pz [0]=(%.4f %.4f %.4f %.4f) [1]=(%.4f %.4f %.4f %.4f)\n",
+         pz[0][0], pz[0][1], pz[0][2], pz[0][3],
+         pz[1][0], pz[1][1], pz[1][2], pz[1][3]);
+    HLog("fit: pz [2]=(%.4f %.4f %.4f %.4f) [3]=(%.4f %.4f %.4f %.4f) org=(%.3f %.3f %.3f)\n",
+         pz[2][0], pz[2][1], pz[2][2], pz[2][3],
+         pz[3][0], pz[3][1], pz[3][2], pz[3][3],
+         pz[3][0], pz[3][1], pz[3][2]);
+    if (st != PRO_TK_NO_ERROR)
+        return;
+
+    s0 = sqrt(pz[0][0] * pz[0][0] + pz[0][1] * pz[0][1] + pz[0][2] * pz[0][2]);
+    if (s0 < 1e-12)
+    {
+        HLog("fit: panzoom row0 degenerate, skip\n");
+        return;
+    }
+    dev = 0.0;
+    for (i = 0; i < 3; i++)
+    {
+        double si = sqrt(pz[i][0] * pz[i][0] + pz[i][1] * pz[i][1]
+                       + pz[i][2] * pz[i][2]);
+        if (si < 1e-12)
+        {
+            dev = 9.9;
+            break;
+        }
+        for (j = 0; j < 3; j++)
+            if (fabs(pz[i][j] / si - rot[i][j]) > dev)
+                dev = fabs(pz[i][j] / si - rot[i][j]);
+    }
+    HLog("fit: panzoom vs rot maxdev=%.5f  (%s)\n", dev,
+         (dev < 1e-2) ? "same layout, apply k" : "UNKNOWN layout, skip");
+    if (dev >= 1e-2)
+        return;
+
+    /* 5) 应用：线性部分乘 k；平移【相对保持】——让实体包围盒中心在屏幕上
+       的位置保持不变（refit 之后它本来就在窗口中心，放大后仍然居中）。
+       行向量约定 p_screen_j = s·(p·r_j) + t_j ⇒ t' = t + (s0 - s')·(c·r_j)。 */
+    sc = s0 * k;
+    cx = 0.5 * (bs[0][0] + bs[1][0]);
+    cy = 0.5 * (bs[0][1] + bs[1][1]);
+    cz = 0.5 * (bs[0][2] + bs[1][2]);
+
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++)
+            pz[i][j] *= k;
+    for (j = 0; j < 3; j++)
+        pz[3][j] += (s0 - sc) * (cx * rot[j][0] + cy * rot[j][1] + cz * rot[j][2]);
+
+    st = ProWindowPanZoomMatrixSet(win, pz);
+    HLog("fit: panzoomSet -> %d  (k=%.3f s=%.3f center=(%.2f %.2f %.2f))\n",
+         (int)st, k, sc, cx, cy, cz);
+    if (st != PRO_TK_NO_ERROR)
+        return;
+
+    /* 6) 应用完再查一次角度 —— 缩放不该改旋转，改了就是格式猜错 */
+    dev = HRotCheckLog(mdl, rot, "after-fit");
+    if (dev < 0.0 || dev > 1e-3)
+        HLog("fit: WARNING rotation changed by fit, re-applying orientation\n");
 }
 
 static int HViewNormalAct(uiCmdCmdId command, uiCmdValue *p_value,
@@ -5102,7 +6004,7 @@ static int HViewNormalAct(uiCmdCmdId command, uiCmdValue *p_value,
     ProMdlType    mt   = PRO_MDL_UNUSED;
     ProSelection *sels = NULL;
     int           n = 0;
-    int           i, k, got = 0;
+    int           i, k, got = 0, have_ref = 0;
     int           win = -1;
     ProVector     nrm, ref;
     double        dot;
@@ -5135,23 +6037,34 @@ static int HViewNormalAct(uiCmdCmdId command, uiCmdValue *p_value,
 
     if (!got)
     {
-        /* 世界坐标轴 FRONT 正视：观察者在 -Y 侧朝 +Y 看，
-           屏幕 Z（朝观察者）= -Y ⇒ 屏幕右 = +X、屏幕上 = +Z。 */
-        nrm[0] = 0.0;
-        nrm[1] = -1.0;
+        /* 2026-10-23 定稿（用户：顺时针反了 ⇒ 改逆时针 90°）：
+           相机仍在 -X 侧朝 +X 看 ⇒ nrm（屏幕 Z，朝观察者）= -X；
+           画面逆时针转 90° ⇒ 屏幕右 = -Z、屏幕上 = -Y。
+           右手系校验：m[1] = nrm × m[0] = (-X) × (-Z) = (0,-1,0) = -Y（屏幕上）；
+           m[0] × m[1] = (-Z) × (-Y) = (-1,0,0) = -X = nrm ✓
+           ⇒ 屏幕右 = -Z、屏幕上 = -Y、朝观察者 = -X。 */
+        nrm[0] = -1.0;
+        nrm[1] = 0.0;
         nrm[2] = 0.0;
-        HLog("HViewNormalAct: no pick -> world axis front normal (0,-1,0)\n");
+        ref[0] = 0.0;
+        ref[1] = 0.0;
+        ref[2] = -1.0;   /* 屏幕右 = -Z ⇒ 屏幕上 = -Y */
+        have_ref = 1;
+        HLog("HViewNormalAct: no pick -> look +X from -X, normal (-1,0,0) ref (0,0,-1)\n");
     }
     HLog("HViewNormalAct: normal=(%.3f %.3f %.3f)\n", nrm[0], nrm[1], nrm[2]);
 
-    /* ---- 参考轴：取与法向最不平行的世界轴（优先 X，然后 Z，最后 Y） ---- */
-    ref[0] = ref[1] = ref[2] = 0.0;
-    if (fabs(nrm[0]) < 0.9)
-        ref[0] = 1.0;
-    else if (fabs(nrm[2]) < 0.9)
-        ref[2] = 1.0;
-    else
-        ref[1] = 1.0;
+    /* ---- 参考轴：没指定时取与法向最不平行的世界轴（优先 X，然后 Z，最后 Y） ---- */
+    if (!have_ref)
+    {
+        ref[0] = ref[1] = ref[2] = 0.0;
+        if (fabs(nrm[0]) < 0.9)
+            ref[0] = 1.0;
+        else if (fabs(nrm[2]) < 0.9)
+            ref[2] = 1.0;
+        else
+            ref[1] = 1.0;
+    }
 
     /* ---- 构造视图矩阵：r0 = ref 在面内的投影，r1 = r2 × r0，r2 = 法向 ---- */
     dot = ref[0] * nrm[0] + ref[1] * nrm[1] + ref[2] * nrm[2];
@@ -5168,6 +6081,7 @@ static int HViewNormalAct(uiCmdCmdId command, uiCmdValue *p_value,
     m[1][1] = nrm[2] * m[0][0] - nrm[0] * m[0][2];
     m[1][2] = nrm[0] * m[0][1] - nrm[1] * m[0][0];
     HVecNormalize(m[1]);
+
     m[2][0] = nrm[0];
     m[2][1] = nrm[1];
     m[2][2] = nrm[2];
@@ -5175,6 +6089,19 @@ static int HViewNormalAct(uiCmdCmdId command, uiCmdValue *p_value,
     m[3][0] = m[3][1] = m[3][2] = 0.0;
     m[3][3] = 1.0;
 
+    st = 0;
+
+    win = -1;
+    ProWindowCurrentGet(&win);
+    HLog("HViewNormalAct: win=%d\n", win);
+
+    /* 先把模型里的基准坐标系列一遍，确认屏幕上那几个三轴到底是什么 */
+    HDatumCsysScan(mdl);
+
+    /* ---- 1) 先定【角度】。ProView.h 明说 Set 会自带 shift + scaling
+       （“to ensure that the model fits properly into the view”），所以它必须是
+       最后一个改朝向的动作；距离放在它之后，用窗口的 pan/zoom 矩阵单独调。
+       这样「角度」和「距离」彻底解耦 —— 缩放按定义改不了旋转。 ---- */
     st = ProViewMatrixSet(mdl, NULL, m);
     HLog("HViewNormalAct: matrixSet -> %d\n", (int)st);
     if (st != PRO_TK_NO_ERROR)
@@ -5183,9 +6110,11 @@ static int HViewNormalAct(uiCmdCmdId command, uiCmdValue *p_value,
         return 0;
     }
 
-    /* ---- 自动调距离：让模型充满当前窗口 ---- */
-    win = -1;
-    ProWindowCurrentGet(&win);
+    /* 角度确认：回读 → 每行除以自身长度归一化 → 逐元素比 maxdev + det(R)=+1 */
+    HRotCheckLog(mdl, m, "after-set");
+
+#if HFIT_USE_REFIT
+    /* 老路子：ProWindowRefit 连远处的基准一起框 ⇒ 实体被缩成一个点 */
     st = ProWindowRefit(win);
     HLog("HViewNormalAct: windowRefit(win=%d) -> %d\n", win, (int)st);
     if (st != PRO_TK_NO_ERROR)
@@ -5193,7 +6122,35 @@ static int HViewNormalAct(uiCmdCmdId command, uiCmdValue *p_value,
         st = ProViewRefit(mdl, NULL);
         HLog("HViewNormalAct: viewRefit -> %d\n", (int)st);
     }
-    ProWindowRepaint(PRO_VALUE_UNUSED);
+    HRotCheckLog(mdl, m, "after-refit");
+#else
+    /* 2) 【无条件】强制重算距离。Set 在矩阵和上次完全一样时会跳过它自带的
+       shift+scaling —— 这就是「第一次缩放完、后面不缩放了」的根因。
+       ProWindowRefit 只重算平移/缩放、不动旋转，随后用 rotcheck 验证。 */
+    {
+        double dev;
+
+        st = ProWindowRefit(win);
+        HLog("HViewNormalAct: windowRefit(win=%d) -> %d\n", win, (int)st);
+        if (st != PRO_TK_NO_ERROR)
+        {
+            st = ProViewRefit(mdl, NULL);
+            HLog("HViewNormalAct: viewRefit -> %d\n", (int)st);
+            st = ProWindowRefit(win);
+            HLog("HViewNormalAct: windowRefit retry -> %d\n", (int)st);
+        }
+
+        dev = HRotCheckLog(mdl, m, "after-refit");
+        if (dev > 1e-3)
+            HLog("HViewNormalAct: WARNING refit changed the rotation\n");
+    }
+
+    /* 3) 基准修正 + 填充微调：k = 含基准包围盒 ÷ 实体包围盒 × HFIT_FILL */
+    HViewFitSolidOnly(mdl, m, win);
+#endif
+
+    ProWindowRepaint((win > 0) ? win : PRO_VALUE_UNUSED);
+    ProWindowDeviceFlush(NULL);   /* 显示命令强制冲掉，避免残留帧 */
 
     HMsg("TD_VIEWNORMAL_OK");
     return 0;
@@ -5236,56 +6193,2184 @@ static int HBatchBackupAct(uiCmdCmdId command, uiCmdValue *p_value,
     return 0;
 }
 
-/*--------------------------- 8. 简化助手 -----------------------------*/
-static int HSimpRepAct(uiCmdCmdId command, uiCmdValue *p_value,
+/*--------------------------- 8. 从方程建曲线 -----------------------------*/
+/* 2026-10-23 新增。
+   原理：Creo「来自方程的曲线」这个特征的 Element Tree 在 ProDtmCrv.h
+   里有完整文档（"FROM EQUATION" 那一节），结构是固定的 8 个元素：
+
+     PRO_E_FEATURE_TREE
+       |-- PRO_E_FEATURE_TYPE         = PRO_FEAT_CURVE
+       |-- PRO_E_CURVE_TYPE           = PRO_CURVE_TYPE_FROM_EQUATION (27)
+       |-- PRO_E_STD_FEATURE_NAME     特征名（文档未标 Mandatory）
+       |-- PRO_E_CRV_FR_EQ_REF_CSYS   坐标系   PRO_VALUE_TYPE_SELECTION
+       |-- PRO_E_CRV_FR_EQ_CSYS_TYPE  坐标系类型 ProCrvFrEquatCsysTypes
+       |-- PRO_E_CRV_FR_EQ_PARAM_MIN  参数下限 PRO_VALUE_TYPE_DOUBLE
+       |-- PRO_E_CRV_FR_EQ_PARAM_MAX  参数上限 PRO_VALUE_TYPE_DOUBLE
+       |-- PRO_E_CRV_ENTER_EQUATION   方程正文 PRO_VALUE_TYPE_WSTRING
+
+   ★ 关键结论：**方程不归插件解析**。PRO_E_CRV_ENTER_EQUATION 只是一段
+     多行文本，交给 Creo 自己的方程解析器 —— 所以 sin / cos / if / endif /
+     evalgraph / 模型参数全都跟手动建曲线一模一样，插件不用写表达式引擎。
+
+   交互：方程写在 D:\H\eq_curve.txt（UTF-8 带不带 BOM 都行，也认 ANSI）。
+     · 文件不存在 → 自动写一份模板并用记事本打开，提示改完再点一次；
+     · 文件存在   → 直接读、直接建特征。
+   文件头是 # TYPE: / # CSYS:，其余不以 # 开头的非空行拼成方程正文。 */
+
+#define H_EQFILE    "D:\\H\\eq_curve.txt"
+#define H_EQ_MAX    16384
+#define H_CSYS_MAX  128
+
+static wchar_t g_eq_buf[H_EQ_MAX];
+static wchar_t g_csys_name[H_CSYS_MAX];
+
+/* 对话框的坐标系下拉用：先把模型里所有坐标系枚举一遍（名字 + 坐标系 id），
+   用户选中哪个就按 id 直接用，不再靠名字匹配。
+   ★★★ 2026-10-23 关键修：id 必须是【坐标系 datum id】，不是【特征 id】！
+   原来用 ProSolidFeatVisit 收 PRO_FEAT_CSYS，拿到的是 feature id；拿它去
+   ProModelitemInit(mdl, id, PRO_CSYS) 直接 -23(NOT_EXIST)，于是退路用
+   PRO_FEATURE 建引用，喂给 PRO_E_CRV_FR_EQ_REF_CSYS 的就是一条"特征引用"，
+   不是坐标系引用 —— 创建时 Creo 在参数/元素校验之外就 -1 掉，errs 还是 0。
+   正确做法（官方 UtilCollect.c:ProUtilFindCsysByName 同款）：
+     ProSolidCsysVisit -> ProCsysToGeomitem -> ProGeomitem{type=PRO_CSYS, id} */
+#define H_CSYS_LIST_MAX  32
+
+typedef struct
+{
+    wchar_t name[H_CSYS_MAX];
+    int     id;                  /* 坐标系 datum id（不是特征 id） */
+} HCsysItem;
+
+static HCsysItem g_csys_list[H_CSYS_LIST_MAX];
+static int       g_csys_cnt     = 0;   /* 可用项数 */
+static int       g_csys_sel_id  = 0;   /* 对话框选中的坐标系 id；0 = 自动取第一个 */
+static ProSolid  g_csys_solid   = NULL;/* ProCsysToGeomitem 需要 owner */
+
+/* 整个文件读成宽字符串；UTF-8 BOM 优先，否则按系统码页(GBK) */
+static wchar_t *HLoadTextW(const char *path)
+{
+    FILE    *fp;
+    long     sz;
+    char    *buf;
+    wchar_t *w;
+    int      n, skip = 0;
+    UINT     cp = CP_ACP;
+
+    fp = fopen(path, "rb");
+    if (fp == NULL)
+        return NULL;
+    fseek(fp, 0, SEEK_END);
+    sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (sz <= 0 || sz > (long)(1 << 20))
+    {
+        fclose(fp);
+        return NULL;
+    }
+    buf = (char *)malloc((size_t)sz);
+    if (buf == NULL)
+    {
+        fclose(fp);
+        return NULL;
+    }
+    if (fread(buf, 1, (size_t)sz, fp) != (size_t)sz)
+    {
+        free(buf);
+        fclose(fp);
+        return NULL;
+    }
+    fclose(fp);
+
+    if (sz >= 3 && (unsigned char)buf[0] == 0xEF
+        && (unsigned char)buf[1] == 0xBB && (unsigned char)buf[2] == 0xBF)
+    {
+        skip = 3;
+        cp   = CP_UTF8;
+    }
+    n = MultiByteToWideChar(cp, 0, buf + skip, (int)sz - skip, NULL, 0);
+    if (n <= 0)
+    {
+        free(buf);
+        return NULL;
+    }
+    w = (wchar_t *)malloc(sizeof(wchar_t) * ((size_t)n + 1));
+    if (w == NULL)
+    {
+        free(buf);
+        return NULL;
+    }
+    MultiByteToWideChar(cp, 0, buf + skip, (int)sz - skip, w, n);
+    w[n] = L'\0';
+    free(buf);
+    return w;
+}
+
+/* 写模板（UTF-8 带 BOM：新版记事本、VS Code 都能认） */
+static void HWriteEqTemplate(void)
+{
+    FILE *fp = fopen(H_EQFILE, "wb");
+
+    if (fp == NULL)
+        return;
+    fputs("\xEF\xBB\xBF", fp);
+    fputs(
+"# TYPE: cartesian\n"
+"# CSYS:\n"
+"# ------------------------------------------------------------------\n"
+"# \xe4\xb8\x8a\xe9\x9d\xa2\xe4\xb8\xa4\xe8\xa1\x8c\xe4\xb8\x8d\xe8\xa6\x81\xe5\x88\xa0\xe3\x80\x82\n"
+"#   TYPE   cartesian(\xe7\xac\x9b\xe5\x8d\xa1\xe5\xb0\x94) / cylindrical(\xe5\x9c\x86\xe6\x9f\xb1) / spherical(\xe7\x90\x83)\n"
+"#   CSYS   \xe7\x95\x99\xe7\xa9\xba = \xe8\x87\xaa\xe5\x8a\xa8\xe7\x94\xa8\xe6\xa8\xa1\xe5\x9e\x8b\xe9\x87\x8c\xe7\x9a\x84\xe7\xac\xac\xe4\xb8\x80\xe4\xb8\xaa\xe5\x9d\x90\xe6\xa0\x87\xe7\xb3\xbb\n"
+"#          \xe4\xb9\x9f\xe5\x8f\xaf\xe4\xbb\xa5\xe5\xa1\xab\xe5\x9d\x90\xe6\xa0\x87\xe7\xb3\xbb\xe5\x90\x8d\xe7\xa7\xb0\n"
+"#   t \xe5\x9b\xba\xe5\xae\x9a\xe4\xbb\x8e 0 \xe5\x88\xb0 1\xef\xbc\x8c\xe4\xb8\x89\xe8\xa7\x92\xe5\x87\xbd\xe6\x95\xb0\xe7\x94\xa8\xe3\x80\x8c\xe5\xba\xa6\xe3\x80\x8d (sin(30)=0.5)\n"
+"# ------------------------------------------------------------------\n"
+"\n"
+"x = 30*t\n"
+"y = 15*sin(360*t)\n"
+"z = 0\n", fp);
+    fclose(fp);
+}
+
+/* 忽略大小写比较前缀（只用于 "# TYPE:" 这类固定头） */
+static int HWPrefixNoCase(const wchar_t *line, const wchar_t *key)
+{
+    size_t i;
+
+    for (i = 0; key[i] != L'\0'; i++)
+    {
+        wchar_t a = line[i], b = key[i];
+
+        if (a >= L'a' && a <= L'z')
+            a = (wchar_t)(a - 32);
+        if (b >= L'a' && b <= L'z')
+            b = (wchar_t)(b - 32);
+        if (a == L'\0' || a != b)
+            return 0;
+    }
+    return 1;
+}
+
+/* 解析：抽 # TYPE: / # CSYS:，其余非 # 开头的非空行拼成方程正文 */
+static void HEqParse(wchar_t *txt, int *p_type)
+{
+    wchar_t *line = txt;
+    int      eqlen = 0;
+
+    *p_type     = PRO_CRV_FR_EQ_CSYS_TYPE_CARTESIAN;
+    g_csys_name[0] = L'\0';
+    g_csys_sel_id  = 0;          /* 文件模式按名字找，不用下拉框的 id */
+    g_eq_buf[0]    = L'\0';
+
+    while (line != NULL && *line != L'\0')
+    {
+        wchar_t *next = wcschr(line, L'\n');
+        wchar_t *q;
+        size_t   L;
+
+        if (next != NULL)
+        {
+            *next = L'\0';
+            next++;
+        }
+        L = wcslen(line);
+        while (L > 0 && (line[L - 1] == L'\r' || line[L - 1] == L' '
+                         || line[L - 1] == L'\t'))
+            line[--L] = L'\0';
+        q = line;
+        while (*q == L' ' || *q == L'\t')
+            q++;
+
+        if (*q == L'#')
+        {
+            if (HWPrefixNoCase(q, L"# TYPE:"))
+            {
+                const wchar_t *v = q + 7;
+
+                while (*v == L' ' || *v == L'\t')
+                    v++;
+                if (HWPrefixNoCase(v, L"cylind") || *v == L'1')
+                    *p_type = PRO_CRV_FR_EQ_CSYS_TYPE_CYLINDRICAL;
+                else if (HWPrefixNoCase(v, L"spher") || *v == L'2')
+                    *p_type = PRO_CRV_FR_EQ_CSYS_TYPE_SPHERICAL;
+                else
+                    *p_type = PRO_CRV_FR_EQ_CSYS_TYPE_CARTESIAN;
+            }
+            else if (HWPrefixNoCase(q, L"# CSYS:"))
+            {
+                const wchar_t *v = q + 7;
+                size_t         n;
+
+                while (*v == L' ' || *v == L'\t')
+                    v++;
+                n = wcslen(v);
+                if (n > 0 && n < H_CSYS_MAX)
+                    wcscpy(g_csys_name, v);
+            }
+        }
+        else if (*q != L'\0')
+        {
+            L = wcslen(q);
+            if (eqlen + (int)L + 2 < H_EQ_MAX)
+            {
+                wcscpy(g_eq_buf + eqlen, q);
+                eqlen += (int)L;
+                g_eq_buf[eqlen++] = L'\n';
+                g_eq_buf[eqlen]   = L'\0';
+            }
+        }
+        line = next;
+    }
+}
+
+/* 找坐标系：名字非空按名字比，否则取模型里第一个坐标系。
+   走 ProSolidCsysVisit（坐标系对象），id 才是能喂给 ProModelitemInit(PRO_CSYS) 的那个。 */
+typedef struct h_csys_find
+{
+    int found;
+    int id;
+} HCsysFind;
+
+/* ProCsys 是不透明句柄，必须经 ProCsysToGeomitem 换成 ProGeomitem 才拿得到 id */
+static int HCsysToItem(ProCsys csys, ProGeomitem *p_gi)
+{
+    ProError st;
+
+    if (csys == NULL || p_gi == NULL || g_csys_solid == NULL)
+        return 0;
+    memset(p_gi, 0, sizeof(*p_gi));
+    st = ProCsysToGeomitem(g_csys_solid, csys, p_gi);
+    if (st != PRO_TK_NO_ERROR)
+    {
+        HLog("HCsysToItem: csysToGeomitem -> %d\n", (int)st);
+        return 0;
+    }
+    return 1;
+}
+
+static ProError HCsysFindVisit(ProCsys csys, ProError status, ProAppData app)
+{
+    HCsysFind  *f = (HCsysFind *)app;
+    ProGeomitem gi;
+    ProName     nm;
+
+    if (status != PRO_TK_NO_ERROR || csys == NULL || f == NULL || f->found > 0)
+        return PRO_TK_NO_ERROR;
+    if (!HCsysToItem(csys, &gi))
+        return PRO_TK_NO_ERROR;
+
+    nm[0] = L'\0';
+    ProModelitemNameGet(&gi, nm);
+    if (g_csys_name[0] != L'\0' && wcscmp(nm, g_csys_name) != 0)
+    {
+        HLog("HEqCurveAct: skip csys id=%d name=", gi.id);
+        HLogW("", nm);
+        return PRO_TK_NO_ERROR;              /* 名字不符，继续找 */
+    }
+    HLog("HEqCurveAct: csys(datum) id=%d name=", gi.id);
+    HLogW("", nm);
+    f->id    = gi.id;
+    f->found = 1;
+    return PRO_TK_NO_ERROR;
+}
+
+/* 枚举模型里全部坐标系，给下拉框用 */
+static ProError HCsysListVisit(ProCsys csys, ProError status, ProAppData app)
+{
+    int        *p_n = (int *)app;
+    ProGeomitem gi;
+
+    if (status != PRO_TK_NO_ERROR || csys == NULL || p_n == NULL)
+        return PRO_TK_NO_ERROR;
+    if (*p_n >= H_CSYS_LIST_MAX)
+        return PRO_TK_NO_ERROR;
+    if (!HCsysToItem(csys, &gi))
+        return PRO_TK_NO_ERROR;
+
+    memset(&g_csys_list[*p_n], 0, sizeof(g_csys_list[*p_n]));
+    ProModelitemNameGet(&gi, g_csys_list[*p_n].name);
+    g_csys_list[*p_n].name[H_CSYS_MAX - 1] = L'\0';
+    g_csys_list[*p_n].id                   = gi.id;
+    HLog("HCsysListVisit: [%d] id=%d name=", *p_n, gi.id);
+    HLogW("", g_csys_list[*p_n].name);
+    (*p_n)++;
+    return PRO_TK_NO_ERROR;
+}
+
+static void HEqCsysCollect(ProMdl mdl)
+{
+    int      n = 0;
+    ProError st;
+
+    g_csys_cnt   = 0;
+    g_csys_solid = NULL;
+    if (mdl == NULL)
+        return;
+    g_csys_solid = (ProSolid)mdl;
+    st = ProSolidCsysVisit((ProSolid)mdl, HCsysListVisit, NULL, (ProAppData)&n);
+    g_csys_cnt = n;
+    HLog("HEqCsysCollect: %d csys found (st=%d)\n", g_csys_cnt, (int)st);
+}
+
+/* 往树里加一个 int / double / wstring 元素
+   ★ 2026-10-23 修：原来这三个函数不管中间哪一步失败都无条件 return 1，
+   日志里 "add xxx -> 1" 是假的，把真正的错误全盖掉了。现在逐段返回真实
+   状态码，任何一个 0 以外的值都能在 h_load.log 里看出是哪一步挂的。 */
+static ProError HEqAddInt(ProElement tree, ProElemId id, int val)
+{
+    ProElement e  = NULL;
+    ProError   st = PRO_TK_GENERAL_ERROR;
+
+    st = ProElementAlloc(id, &e);
+    if (st != PRO_TK_NO_ERROR || e == NULL)
+        return (st != PRO_TK_NO_ERROR) ? st : PRO_TK_BAD_INPUTS;
+    st = ProElementIntegerSet(e, val);
+    if (st == PRO_TK_NO_ERROR)
+        st = ProElemtreeElementAdd(tree, NULL, e);
+    if (st != PRO_TK_NO_ERROR)
+        ProElementFree(&e);
+    return st;
+}
+
+static ProError HEqAddDouble(ProElement tree, ProElemId id, double val)
+{
+    ProElement e  = NULL;
+    ProError   st = PRO_TK_GENERAL_ERROR;
+
+    st = ProElementAlloc(id, &e);
+    if (st != PRO_TK_NO_ERROR || e == NULL)
+        return (st != PRO_TK_NO_ERROR) ? st : PRO_TK_BAD_INPUTS;
+    st = ProElementDoubleSet(e, val);
+    if (st == PRO_TK_NO_ERROR)
+        st = ProElemtreeElementAdd(tree, NULL, e);
+    if (st != PRO_TK_NO_ERROR)
+        ProElementFree(&e);
+    return st;
+}
+
+static ProError HEqAddWstring(ProElement tree, ProElemId id, wchar_t *val)
+{
+    ProElement e  = NULL;
+    ProError   st = PRO_TK_GENERAL_ERROR;
+
+    st = ProElementAlloc(id, &e);
+    if (st != PRO_TK_NO_ERROR || e == NULL)
+        return (st != PRO_TK_NO_ERROR) ? st : PRO_TK_BAD_INPUTS;
+    st = ProElementWstringSet(e, val);
+    if (st == PRO_TK_NO_ERROR)
+        st = ProElemtreeElementAdd(tree, NULL, e);
+    if (st != PRO_TK_NO_ERROR)
+        ProElementFree(&e);
+    return st;
+}
+
+/*=================== 8b. 内置方程模板库 ==============================
+   2026-10-23 用户要求：「把有用的方程都提前写好，点按钮选方程、改几个参数、
+   自动生成」。所以这里预置一批常用曲线，参数由对话框输入。
+
+   每个模板只存「方程正文」，参数赋值行由 HAppend 自动拼在正文前面，
+   所以正文里直接引用变量名（r0 / h / b1 ...）即可，改参数就是改那一行。
+
+   ★ Creo 关系式的三条铁律（模板里都遵守）：
+     · t 固定 0→1；
+     · 三角函数用【度】，sin(30)=0.5，所以 180*u、360*u 才是半圈/一圈；
+     · 没有 pi 常量，弧度换算写 0.0174532925199433（=pi/180），
+       2*pi 写 6.28318530717959。
+   ==================================================================== */
+
+typedef struct
+{
+    const wchar_t *var;      /* 方程里用的变量名 */
+    const wchar_t *label;    /* 对话框里显示的中文说明 */
+    double         def;      /* 默认值 */
+} HEqPrm;
+
+typedef struct
+{
+    const wchar_t *title;    /* 列表里显示的名字 */
+    const wchar_t *desc;     /* 右侧说明（支持 \n 换行） */
+    int            ctype;    /* 0=笛卡尔 1=圆柱 2=球；-1 = 读 eq_curve.txt */
+    int            nprm;
+    HEqPrm         prm[6];
+    const wchar_t *eq;       /* 单曲线模板的方程正文；分段模板为 NULL */
+    /* 分段模板（凸轮）：每段一条曲线，各自一个不含条件的表达式。
+       2026-10-23：方程求值器不接受 if/else/endif（9 个自检用例证实），
+       所以凸轮按运动段拆开建，靠 t 映射到本段的角度区间。 */
+    const wchar_t *segname[8];
+    const wchar_t *segeq[8];
+    int            nseg;     /* 0 = 单曲线，用 eq */
+} HEqTpl;
+
+static const HEqTpl g_eqtpl[] =
+{
+    /* 0 ---------------------------------------------------------------- */
+    {
+        L"盘形凸轮 - 简谐运动",
+        L"柱坐标。最常用的运动规律，中低速首选，加速度连续无刚性冲击。\n"
+        L"r0=基圆半径，h=行程，b1/b2/b3=推程/远休/回程角（度和不要超 360）。\n"
+        L"按运动段拆成 4 条曲线（推程/远休/回程/近休），首尾严格连续；\n"
+        L"拉伸时进草图用「参考-使用边」把它们选成一圈即为完整轮廓。\n"
+        L"（得到的是理论轮廓；滚子从动件要在 Creo 里按滚子半径向内偏移）",
+        1, 5,
+        {
+            { L"r0", L"基圆半径 r0 (mm)",  40.0 },
+            { L"h",  L"行程 h (mm)",       20.0 },
+            { L"b1", L"推程角 b1 (度)",   120.0 },
+            { L"b2", L"远休止角 b2 (度)",  60.0 },
+            { L"b3", L"回程角 b3 (度)",   120.0 },
+        },
+        NULL,
+        { L"CAM_RISE", L"CAM_DWELL_F", L"CAM_RETURN", L"CAM_DWELL_N" },
+        {
+            L"theta = b1*t\n"
+            L"r = r0+h*(1-cos(180*t))/2\n"
+            L"z = 0",
+
+            L"theta = b1+b2*t\n"
+            L"r = r0+h\n"
+            L"z = 0",
+
+            L"theta = b1+b2+b3*t\n"
+            L"r = r0+h*(1+cos(180*t))/2\n"
+            L"z = 0",
+
+            L"theta = b1+b2+b3+rest*t\n"
+            L"r = r0\n"
+            L"z = 0"
+        },
+        4
+    },
+    /* 1 ---------------------------------------------------------------- */
+    {
+        L"盘形凸轮 - 摆线运动",
+        L"柱坐标。推程回程都无任何冲击（速度、加速度全连续），高速凸轮首选。\n"
+        L"参数含义同「简谐运动」；同样按 4 段拆成 4 条曲线，首尾连续。",
+        1, 5,
+        {
+            { L"r0", L"基圆半径 r0 (mm)",  40.0 },
+            { L"h",  L"行程 h (mm)",       20.0 },
+            { L"b1", L"推程角 b1 (度)",   120.0 },
+            { L"b2", L"远休止角 b2 (度)",  60.0 },
+            { L"b3", L"回程角 b3 (度)",   120.0 },
+        },
+        NULL,
+        { L"CAM_RISE", L"CAM_DWELL_F", L"CAM_RETURN", L"CAM_DWELL_N" },
+        {
+            L"theta = b1*t\n"
+            L"r = r0+h*(t-sin(360*t)/6.28318530717959)\n"
+            L"z = 0",
+
+            L"theta = b1+b2*t\n"
+            L"r = r0+h\n"
+            L"z = 0",
+
+            L"theta = b1+b2+b3*t\n"
+            L"r = r0+h*(1-t+sin(360*t)/6.28318530717959)\n"
+            L"z = 0",
+
+            L"theta = b1+b2+b3+rest*t\n"
+            L"r = r0\n"
+            L"z = 0"
+        },
+        4
+    },
+    /* 2 ---------------------------------------------------------------- */
+    {
+        L"盘形凸轮 - 等加速等减速",
+        L"柱坐标。加速度分段恒定，只有柔性冲击，中速场合常用。\n"
+        L"推程/回程各有一个 u=0.5 的拐点，所以拆成 6 条曲线\n"
+        L"（推程前后段/远休/回程前后段/近休），首尾连续。",
+        1, 5,
+        {
+            { L"r0", L"基圆半径 r0 (mm)",  40.0 },
+            { L"h",  L"行程 h (mm)",       20.0 },
+            { L"b1", L"推程角 b1 (度)",   120.0 },
+            { L"b2", L"远休止角 b2 (度)",  60.0 },
+            { L"b3", L"回程角 b3 (度)",   120.0 },
+        },
+        NULL,
+        { L"CAM_RISE1", L"CAM_RISE2", L"CAM_DWELL_F",
+          L"CAM_RET1",  L"CAM_RET2",  L"CAM_DWELL_N" },
+        {
+            L"theta = b1*0.5*t\n"
+            L"r = r0+h*0.5*t*t\n"
+            L"z = 0",
+
+            L"theta = b1*(0.5+0.5*t)\n"
+            L"r = r0+h-h*0.5*(1-t)*(1-t)\n"
+            L"z = 0",
+
+            L"theta = b1+b2*t\n"
+            L"r = r0+h\n"
+            L"z = 0",
+
+            L"theta = b1+b2+b3*0.5*t\n"
+            L"r = r0+h-h*0.5*t*t\n"
+            L"z = 0",
+
+            L"theta = b1+b2+b3*(0.5+0.5*t)\n"
+            L"r = r0+h*0.5*(1-t)*(1-t)\n"
+            L"z = 0",
+
+            L"theta = b1+b2+b3+rest*t\n"
+            L"r = r0\n"
+            L"z = 0"
+        },
+        6
+    },
+    /* 3 ---------------------------------------------------------------- */
+    {
+        L"盘形凸轮 - 等速运动",
+        L"柱坐标。位移线性，但首尾速度突变有刚性冲击，只适合低速、轻载、单向送料。\n"
+        L"参数含义同「简谐运动」；按 4 段拆成 4 条曲线。",
+        1, 5,
+        {
+            { L"r0", L"基圆半径 r0 (mm)",  40.0 },
+            { L"h",  L"行程 h (mm)",       20.0 },
+            { L"b1", L"推程角 b1 (度)",   120.0 },
+            { L"b2", L"远休止角 b2 (度)",  60.0 },
+            { L"b3", L"回程角 b3 (度)",   120.0 },
+        },
+        NULL,
+        { L"CAM_RISE", L"CAM_DWELL_F", L"CAM_RETURN", L"CAM_DWELL_N" },
+        {
+            L"theta = b1*t\n"
+            L"r = r0+h*t\n"
+            L"z = 0",
+
+            L"theta = b1+b2*t\n"
+            L"r = r0+h\n"
+            L"z = 0",
+
+            L"theta = b1+b2+b3*t\n"
+            L"r = r0+h*(1-t)\n"
+            L"z = 0",
+
+            L"theta = b1+b2+b3+rest*t\n"
+            L"r = r0\n"
+            L"z = 0"
+        },
+        4
+    },
+    /* 4 ---------------------------------------------------------------- */
+    {
+        L"渐开线（齿轮齿廓）",
+        L"笛卡尔坐标。rb=基圆半径，a0/a1=起始/终止展开角（度），"
+        L"半径 rb/cos(a1) 处结束。\n"
+        L"做完整齿轮：再用「阵列 / 镜像」绕中心按 360/z 复制，齿根用圆角过渡。",
+        0, 3,
+        {
+            { L"rb", L"基圆半径 rb (mm)",      40.0 },
+            { L"a0", L"起始展开角 (度)",   0.0 },
+            { L"a1", L"终止展开角 (度)",  60.0 },
+        },
+        L"u = a0+(a1-a0)*t\n"
+        L"ar = u*0.0174532925199433\n"
+        L"x = rb*(cos(u)+ar*sin(u))\n"
+        L"y = rb*(sin(u)-ar*cos(u))\n"
+        L"z = 0"
+    },
+    /* 5 ---------------------------------------------------------------- */
+    {
+        L"圆柱螺旋线（弹簧）",
+        L"柱坐标。R=中径半径，n=圈数，p=螺距，z0=起点高度。\n"
+        L"得到中心线；再用「扫描」配圆形截面，就是弹簧实体。",
+        1, 4,
+        {
+            { L"R",  L"中径半径 R (mm)",      20.0 },
+            { L"n",  L"圈数 n (圈)",           8.0 },
+            { L"p",  L"螺距 p (mm)",           6.0 },
+            { L"z0", L"起点高度 z0 (mm)",      0.0 },
+        },
+        L"theta = t*360*n\n"
+        L"r = R\n"
+        L"z = z0+p*n*t"
+    },
+    /* 6 ---------------------------------------------------------------- */
+    {
+        L"圆锥螺旋线（锥形弹簧）",
+        L"柱坐标。R1/R2=小端/大端半径，n=圈数，p=螺距。\n"
+        L"半径随高度线性变化，用于塔形簧、变径簧。",
+        1, 4,
+        {
+            { L"R1", L"小端半径 R1 (mm)",     15.0 },
+            { L"R2", L"大端半径 R2 (mm)",     25.0 },
+            { L"n",  L"圈数 n (圈)",           8.0 },
+            { L"p",  L"螺距 p (mm)",           6.0 },
+        },
+        L"theta = t*360*n\n"
+        L"r = R1+(R2-R1)*t\n"
+        L"z = p*n*t"
+    },
+    /* 7 ---------------------------------------------------------------- */
+    {
+        L"变螺距弹簧",
+        L"柱坐标。p1/p2=起始/终止螺距，螺距沿高度线性变化（两端密、中间疏之类）。\n"
+        L"R=中径半径，n=圈数。",
+        1, 4,
+        {
+            { L"R",  L"中径半径 R (mm)",      20.0 },
+            { L"n",  L"圈数 n (圈)",           8.0 },
+            { L"p1", L"起始螺距 p1 (mm)",       3.0 },
+            { L"p2", L"终止螺距 p2 (mm)",      10.0 },
+        },
+        L"theta = t*360*n\n"
+        L"r = R\n"
+        L"z = n*(p1*t+(p2-p1)*t*t/2)"
+    },
+    /* 8 ---------------------------------------------------------------- */
+    {
+        L"阿基米德螺线",
+        L"柱坐标。a=起始半径，b=每弧度半径增量，n=圈数。\n"
+        L"用于盘形凸轮近似轮廓、涡卷、蚊香形流道。",
+        1, 3,
+        {
+            { L"a", L"起始半径 a (mm)",        2.0 },
+            { L"b", L"每弧度增量 b (mm/rad)",      3.0 },
+            { L"n", L"圈数 n (圈)",            3.0 },
+        },
+        L"theta = t*360*n\n"
+        L"r = a+b*theta*0.0174532925199433\n"
+        L"z = 0"
+    },
+    /* 9 ---------------------------------------------------------------- */
+    {
+        L"对数螺线（等压力角凸轮）",
+        L"柱坐标。a=起始半径，k=压力角系数（越大张得越快），n=圈数。\n"
+        L"与径向线的夹角处处相等，是做等压力角凸轮的理论轮廓。",
+        1, 3,
+        {
+            { L"a", L"起始半径 a (mm)",       10.0 },
+            { L"k", L"压力角系数 k (无量纲)",     0.15 },
+            { L"n", L"圈数 n (圈)",            3.0 },
+        },
+        L"theta = t*360*n\n"
+        L"r = a*exp(k*theta*0.0174532925199433)\n"
+        L"z = 0"
+    },
+    /* 10 --------------------------------------------------------------- */
+    {
+        L"摆线（摆线针轮齿廓）",
+        L"笛卡尔坐标。R=滚动圆半径，T=总转角（度，360=一整圈）。\n"
+        L"摆线针轮、齿根过渡曲线都用它；改 T 只取一段。",
+        0, 2,
+        {
+            { L"R", L"滚动圆半径 R (mm)",     30.0 },
+            { L"T", L"总转角 T (度)",   360.0 },
+        },
+        L"u = T*t\n"
+        L"ur = u*0.0174532925199433\n"
+        L"x = R*(ur-sin(u))\n"
+        L"y = R*(1-cos(u))\n"
+        L"z = 0"
+    },
+    /* 11 --------------------------------------------------------------- */
+    {
+        L"椭圆",
+        L"笛卡尔坐标。a/b=长/短半轴，一笔画满一整圈。\n"
+        L"做成实体：拉伸 / 或用扫描配截面。",
+        0, 2,
+        {
+            { L"a", L"长半轴 a (mm)",         40.0 },
+            { L"b", L"短半轴 b (mm)",         25.0 },
+        },
+        L"x = a*cos(360*t)\n"
+        L"y = b*sin(360*t)\n"
+        L"z = 0"
+    },
+    /* 12 --------------------------------------------------------------- */
+    {
+        L"正弦曲线",
+        L"笛卡尔坐标。A=幅值，L=总长，n=周期数。\n"
+        L"做波纹板截面、蛇形管中心线、拖链走向。",
+        0, 3,
+        {
+            { L"A", L"幅值 A (mm)",           15.0 },
+            { L"L", L"总长 L (mm)",          100.0 },
+            { L"n", L"周期数 n (个)",          3.0 },
+        },
+        L"x = L*t\n"
+        L"y = A*sin(360*n*t)\n"
+        L"z = 0"
+    },
+    /* 13 --------------------------------------------------------------- */
+    {
+        L"正弦波纹环（波形垫圈）",
+        L"柱坐标。R=中径半径，A=波高，n=波数。\n"
+        L"在 XY 平面走一整圈，高度按正弦起伏；扫描小截面即为波形垫圈。",
+        1, 3,
+        {
+            { L"R", L"中径半径 R (mm)",       25.0 },
+            { L"A", L"波高 A (mm)",            3.0 },
+            { L"n", L"波数 n (个)",            6.0 },
+        },
+        L"theta = t*360\n"
+        L"r = R\n"
+        L"z = A*sin(n*theta)"
+    },
+    /* 15 ---------------------------------------------------------------
+       以下 5 条是给精密转轴/传动件补的（渐开线齿廓、蜗杆、变截面母线、
+       轴肩过渡、波形弹簧）。凡是「绕轴回转成形」的，都是一条母线绕 X 轴
+       转 360° 或沿母线扫描，方程只负责这条母线/中心线。 */
+    {
+        L"渐开线齿廓（按模数齿数压力角）",
+        L"笛卡尔坐标。m=模数，z=齿数，alpha=压力角(度)，ua=画多长(展开角,度)。\n"
+        L"基圆半径 rb=m*z*cos(alpha)/2 自动算，改 m/z 齿形立刻跟着变，不用手算 rb。\n"
+        L"ua 要盖到齿顶圆：ua≈acos(rb/ra)，20齿m2(ra=22,rb=18.79)约 32°。\n"
+        L"用途：齿轮齿廓、渐开线花键(DIN 5480 / ANSI B92.1)齿侧、涡旋盘型线。\n"
+        L"用法：镜像出对称齿侧 → 按 360/z 阵列 → 齿根加过渡圆角。",
+        0, 4,
+        {
+            { L"m",     L"模数 m (mm)",              2.0 },
+            { L"z",     L"齿数 z (个)",             20.0 },
+            { L"alpha", L"压力角 alpha (度)",        20.0 },
+            { L"ua",    L"展开角上限 ua (度)",       32.0 },
+        },
+        L"rb = m*z*cos(alpha)/2\n"
+        L"u = ua*t\n"
+        L"ar = u*0.0174532925199433\n"
+        L"x = rb*(cos(u)+ar*sin(u))\n"
+        L"y = rb*(sin(u)-ar*cos(u))\n"
+        L"z = 0"
+    },
+    /* 16 --------------------------------------------------------------- */
+    {
+        L"蜗杆螺旋线（按模数头数）",
+        L"柱坐标。m=轴向模数，z1=头数，q=直径系数，n=圈数。\n"
+        L"分度圆半径 r1=m*q/2、导程 s=pi*m*z1 全部自动算，不用手推导程。\n"
+        L"用途：阿基米德蜗杆(ZA)/法向直廓蜗杆(ZN)的中心线——\n"
+        L"      配一条轴向直线齿廓做「螺旋扫描」即得蜗杆；也是丝杠、螺纹中心线。",
+        1, 4,
+        {
+            { L"m",  L"轴向模数 m (mm)",        2.0 },
+            { L"z1", L"头数 z1 (个)",           1.0 },
+            { L"q",  L"直径系数 q (无量纲)",   11.0 },
+            { L"n",  L"圈数 n (圈)",            3.0 },
+        },
+        L"r1 = m*q/2\n"
+        L"s = 3.14159265358979*m*z1\n"
+        L"theta = t*360*n\n"
+        L"r = r1\n"
+        L"z = s*n*t"
+    },
+    /* 17 --------------------------------------------------------------- */
+    {
+        L"抛物线母线（变截面轴）",
+        L"笛卡尔坐标。d1/d2=两端直径，L=过渡段长度，k=曲率指数。\n"
+        L"k=2 是标准抛物线；k 取 1.5~3 可调过渡缓急（越小越早变粗）。\n"
+        L"注意：只有小端(t=0)相切，大端(t=1)有折角。\n"
+        L"用途：锥形轴/造型母线、变截面梁；两端都要相切请用下面「S 曲线过渡」。",
+        0, 4,
+        {
+            { L"d1", L"小端直径 d1 (mm)",      20.0 },
+            { L"d2", L"大端直径 d2 (mm)",      40.0 },
+            { L"L",  L"过渡长度 L (mm)",       60.0 },
+            { L"k",  L"曲率指数 k (无量纲)",    2.0 },
+        },
+        L"x = L*t\n"
+        L"y = d1/2+(d2/2-d1/2)*t^k\n"
+        L"z = 0"
+    },
+    /* 18 --------------------------------------------------------------- */
+    {
+        L"椭圆弧过渡（轴肩圆角）",
+        L"笛卡尔坐标。r1/r2=小端/大端半径，L=轴向过渡长度。\n"
+        L"两端都与相邻面相切：t=0 处竖切（贴轴肩端面），t=1 处水平（贴大圆柱面）。\n"
+        L"用途：精密转轴台阶根部、轴承定位轴肩、磨削越程处——\n"
+        L"      比直角+小圆角的应力集中低得多，且长度可精确控制。",
+        0, 3,
+        {
+            { L"r1", L"小端半径 r1 (mm)",      10.0 },
+            { L"r2", L"大端半径 r2 (mm)",      20.0 },
+            { L"L",  L"轴向过渡长 L (mm)",      8.0 },
+        },
+        L"x = L*(1-cos(90*t))\n"
+        L"y = r1+(r2-r1)*sin(90*t)\n"
+        L"z = 0"
+    },
+    /* 19 --------------------------------------------------------------- */
+    {
+        L"波形弹簧（螺旋开口）",
+        L"柱坐标。R=中径半径，A=波高，n=每圈波数，p=轴向螺距，nz=圈数。\n"
+        L"开口波形簧：边转边升边起伏，扫描小圆截面即为实体。\n"
+        L"用途：精密转轴/轴承的轻载预紧、空间受限处的轴向压紧。\n"
+        L"（闭合的波形垫圈用上面那条「正弦波纹环」）",
+        1, 5,
+        {
+            { L"R",  L"中径半径 R (mm)",       20.0 },
+            { L"A",  L"波高 A (mm)",            1.5 },
+            { L"n",  L"每圈波数 n (个)",        3.0 },
+            { L"p",  L"轴向螺距 p (mm)",        2.0 },
+            { L"nz", L"圈数 nz (圈)",           2.0 },
+        },
+        L"theta = t*360*nz\n"
+        L"r = R\n"
+        L"z = p*nz*t+A*sin(n*theta)"
+    },
+    /* 21 ---------------------------------------------------------------
+       转轴变径段的三条互补曲线：抛物线(单端相切,造型) / 椭圆弧(短圆角) /
+       S 曲线(双端相切,长过渡)。按过渡长度和是否允许折角选。 */
+    {
+        L"S 曲线过渡（两端相切变截面轴）",
+        L"笛卡尔坐标。d1/d2=两端直径，L=过渡长度。\n"
+        L"y=d1/2+(d2/2-d1/2)*(3*t^2-2*t^3)，两端斜率同时为 0，\n"
+        L"即小端贴小圆柱面、大端贴大圆柱面，两头都没有折角。\n"
+        L"用途：精密转轴长变径段、花键轴到轴颈的过渡、磨削让位过渡——\n"
+        L"      折角为零 ⇒ 没有二次应力集中，是台阶轴最省心的过渡形式。",
+        0, 3,
+        {
+            { L"d1", L"小端直径 d1 (mm)",      20.0 },
+            { L"d2", L"大端直径 d2 (mm)",      40.0 },
+            { L"L",  L"过渡长度 L (mm)",       40.0 },
+        },
+        L"x = L*t\n"
+        L"y = d1/2+(d2/2-d1/2)*(3*t^2-2*t^3)\n"
+        L"z = 0"
+    },
+    /* 23 --------------------------------------------------------------- */
+    {
+        L"圆",
+        L"笛卡尔坐标。XY 平面上的整圆，圆心在坐标原点、半径 R。\n"
+        L"用途：基准曲线、端面轮廓、回转体参考边、拉伸/旋转的辅助线、缠绕展开的基线。",
+        0, 1,
+        {
+            { L"R", L"半径 R (mm)", 10.0 },
+        },
+        L"x = R*cos(360*t)\n"
+        L"y = R*sin(360*t)\n"
+        L"z = 0"
+    },
+    /* 24 --------------------------------------------------------------- */
+    {
+        L"哥特式沟道（滚珠丝杠/轴承沟道）",
+        L"笛卡尔坐标，XY 平面上的一段沟道截面：两段等半径圆弧（偏心），共 2 条曲线。\n"
+        L"rb=钢球半径，f=吻合度（R/rb，滚珠丝杠常用 1.04，轴承 1.02~1.08），\n"
+        L"alpha=接触角（度，常用 45），amax=圆弧张到多少度（度，常用 55~60，决定沟槽宽度）。\n"
+        L"右弧 GOTHIC_R + 左弧 GOTHIC_L，在 x=0 的沟底相交（交点即哥特尖），\n"
+        L"两弧在 ±alpha 处与钢球相切；沟底比钢球最低点低一点，留出油膜间隙。\n"
+        L"用法：两条弧「参考-使用边」进草图 → 沿螺旋线扫描切除 = 滚珠丝杠沟道。",
+        0, 4,
+        {
+            { L"rb",    L"钢球半径 rb (mm)",        3.0 },
+            { L"f",     L"吻合度 f (R/rb)",         1.04 },
+            { L"alpha", L"接触角 alpha (度)",       45.0 },
+            { L"amax",  L"圆弧张角 amax (度)",      60.0 },
+        },
+        NULL,
+        { L"GOTHIC_R", L"GOTHIC_L" },
+        {
+            L"RR = f*rb\n"
+            L"dd = RR-rb\n"
+            L"cx = dd*sin(alpha)\n"
+            L"cy = dd*cos(alpha)\n"
+            L"y0 = cy-sqrt(RR*RR-cx*cx)\n"
+            L"y1 = cy-RR*cos(amax)\n"
+            L"y = y0+(y1-y0)*t\n"
+            L"x = -cx+sqrt(RR*RR-(y-cy)*(y-cy))\n"
+            L"z = 0",
+
+            L"RR = f*rb\n"
+            L"dd = RR-rb\n"
+            L"cx = dd*sin(alpha)\n"
+            L"cy = dd*cos(alpha)\n"
+            L"y0 = cy-sqrt(RR*RR-cx*cx)\n"
+            L"y1 = cy-RR*cos(amax)\n"
+            L"y = y0+(y1-y0)*t\n"
+            L"x = cx-sqrt(RR*RR-(y-cy)*(y-cy))\n"
+            L"z = 0"
+        },
+        2
+    },
+    /* 22 --------------------------------------------------------------- */
+    {
+        L"【自定义】读取 D:\\H\\eq_curve.txt",
+        L"不用模板，直接读 D:\\H\\eq_curve.txt 里的方程（UTF-8 或 ANSI 都行）。\n"
+        L"文件头的 # TYPE: / # CSYS: 照旧有效；文件不存在会自动生成一份模板。\n"
+        L"适合自己写复杂方程、或者反复调试同一个公式。",
+        -1, 0,
+        { { NULL, NULL, 0.0 } },
+        NULL
+    },
+};
+
+#define H_EQ_TPL_N  ((int)(sizeof(g_eqtpl) / sizeof(g_eqtpl[0])))
+
+/* 追加格式化文本，返回新的写入位置；失败返回 -1 */
+static int HAppend(wchar_t *dst, int cap, int pos, const wchar_t *fmt, ...)
+{
+    va_list ap;
+    int     n;
+
+    if (pos < 0 || pos >= cap)
+        return -1;
+    va_start(ap, fmt);
+    n = vswprintf(dst + pos, (size_t)(cap - pos), fmt, ap);
+    va_end(ap);
+    if (n < 0)
+        return -1;
+    return pos + n;
+}
+
+/*=================== 8c. 模板选择对话框 ==============================
+   纯 Win32 自建窗口，**不用 .res 资源文件**。
+   理由：TOOLKIT 的 ProUIDialog 必须配 .res，不同 Creo 版本对 res 的
+   接受度不一样；自己 CreateWindow 没有这个依赖，而且失败时能静默退回
+   文件模式（不会让按钮彻底不可用）。
+   ==================================================================== */
+
+#define HED_MAX_PRM 6
+#define HED_LIST    3001
+#define HED_INFO    3002
+#define HED_DESC    3003
+#define HED_CSYSL   3004
+#define HED_CSYS    3005
+#define HED_TIP     3006
+#define HED_OK      3007
+#define HED_CAN     3008
+#define HED_PLAB(i) (3100 + (i))
+#define HED_PEDT(i) (3120 + (i))
+
+typedef struct
+{
+    HWND    hwnd;
+    int     tpl;                 /* 当前选中的模板下标 */
+    int     ok;                  /* 1 = 点了「生成曲线」 */
+    int     done;                /* 1 = 对话框该关了 */
+    int     created;             /* 1 = 窗口真建起来过（用来区分“取消”和“建不起来”） */
+    HFONT   font;
+    HWND    hlist, hinfo, hdesc, htip, hcsysl, hcsys, hok, hcan;
+    HWND    hplab[HED_MAX_PRM], hpedt[HED_MAX_PRM];
+    wchar_t csysname[H_CSYS_MAX];
+    int     csyspick;            /* 下拉框选中项：0 = 默认（第一个），n = g_csys_list[n-1] */
+    int     sc;                  /* DPI 缩放百分比：100 = 96dpi，175 = 175% */
+    double  val[HED_MAX_PRM];
+} HEqDlg;
+
+/* 逻辑像素 → 物理像素。v 一律按 96dpi 下的大小写，这里乘 d->sc。
+   2026-10-23：本机 2880x1920 @175%，原来写死 880x560 + 15px 字体，
+   在 DPI 感知进程里就是 15 物理像素（≈8.6 逻辑像素 ≈6.5pt），看不清。 */
+#define HSL(d, v)  MulDiv((v), ((d)->sc > 0 ? (d)->sc : 100), 100)
+
+/* WM_GETMINMAXINFO 在 WM_CREATE 之前就到了，那时 d 还是 NULL，
+   所以这里另存一份给最小尺寸用。 */
+static int g_heq_sc = 100;
+
+/* 当前模板的参数名/默认值刷到控件上（切模板时调用） */
+static void HEqDlgSync(HEqDlg *d)
+{
+    const HEqTpl *t;
+    int           i;
+
+    if (d == NULL || d->tpl < 0 || d->tpl >= H_EQ_TPL_N)
+        return;
+    t = &g_eqtpl[d->tpl];
+    {
+        wchar_t buf[128];
+
+        /* 单位统一按 mm / 度，直接标在标题后面，省得用户猜 */
+        swprintf(buf, 128, L"%ls    [单位 mm / 度]", t->title);
+        SetWindowTextW(d->hinfo, buf);
+    }
+    SetWindowTextW(d->hdesc, t->desc);
+    for (i = 0; i < HED_MAX_PRM; i++)
+    {
+        if (i < t->nprm && t->ctype >= 0)
+        {
+            wchar_t buf[64];
+
+            SetWindowTextW(d->hplab[i], t->prm[i].label);
+            swprintf(buf, 64, L"%g", t->prm[i].def);
+            SetWindowTextW(d->hpedt[i], buf);
+            ShowWindow(d->hplab[i], SW_SHOW);
+            ShowWindow(d->hpedt[i], SW_SHOW);
+            EnableWindow(d->hpedt[i], TRUE);
+        }
+        else
+        {
+            SetWindowTextW(d->hplab[i], L"");
+            SetWindowTextW(d->hpedt[i], L"");
+            ShowWindow(d->hplab[i], SW_HIDE);
+            ShowWindow(d->hpedt[i], SW_HIDE);
+            EnableWindow(d->hpedt[i], FALSE);
+        }
+    }
+    /* 2026-10-23 用户要求：「给方程曲线备注非闭合曲线，记得投影」。
+       这里把两条提示拼在一起常驻在说明区：
+       ① 用法（改参数→生成、坐标系的作用）；
+       ② ★ 方程曲线是开放样条 —— 首尾两点坐标重合，但 Creo 存的是
+          带两个端点的开放曲线，拓扑上没有闭合（方程输出类型固定，
+          没有「闭合」开关）。直接拿它去修剪 / 扫描切除，接缝处必然
+          留缝或切不全，所以必须先投影到目标曲面（穿透求交），或者
+          用这条曲线扫一条 0.01mm 窄面组当刀。 */
+    {
+        wchar_t tip[512];
+
+        if (t->ctype < 0)
+            wcscpy(tip, L"选这一项时直接用 eq_curve.txt 里的方程，上面的参数框不生效。\n");
+        else
+            wcscpy(tip, L"改完参数点「生成曲线」；坐标系决定原点与 X 轴朝向。\n");
+        wcscat(tip, L"※ 方程曲线是开放样条（首尾两点重合、但拓扑不闭合）："
+                    L"直接修剪 / 扫描切除会在接缝处留缝或切不全。\n"
+                    L"  记得先【投影】到这个曲面，再用投影曲线（或 0.01mm 窄面组）去修剪。");
+        SetWindowTextW(d->htip, tip);
+    }
+}
+
+/* 读回参数。返回 1 成功；0 表示某个框里不是数字（已弹框提示并选中该框） */
+static int HEqDlgCollect(HEqDlg *d)
+{
+    const HEqTpl *t;
+    int           i;
+
+    if (d == NULL || d->tpl < 0 || d->tpl >= H_EQ_TPL_N)
+        return 0;
+    t = &g_eqtpl[d->tpl];
+
+    /* 坐标系改成下拉框：0 = 默认（第一个），1..N = g_csys_list[ci-1] */
+    {
+        int ci = (int)SendMessageW(d->hcsys, CB_GETCURSEL, 0, 0);
+
+        d->csyspick    = 0;
+        d->csysname[0] = L'\0';
+        if (ci >= 1 && ci <= g_csys_cnt)
+        {
+            d->csyspick = ci;
+            wcsncpy(d->csysname, g_csys_list[ci - 1].name, H_CSYS_MAX - 1);
+            d->csysname[H_CSYS_MAX - 1] = L'\0';
+        }
+    }
+    if (t->ctype < 0)
+        return 1;                        /* 自定义：不校验参数 */
+
+    for (i = 0; i < t->nprm; i++)
+    {
+        wchar_t  buf[64];
+        wchar_t *end = NULL;
+        double   v;
+
+        GetWindowTextW(d->hpedt[i], buf, 64);
+        v = wcstod(buf, &end);
+        while (end != NULL && (*end == L' ' || *end == L'\t'))
+            end++;
+        if (end == buf || end == NULL || *end != L'\0')
+        {
+            wchar_t msg[256];
+
+            swprintf(msg, 256, L"参数「%ls」不是有效数字：%ls",
+                     t->prm[i].label, buf);
+            MessageBoxW(d->hwnd, msg, L"参数有误", MB_OK | MB_ICONWARNING);
+            SetFocus(d->hpedt[i]);
+            SendMessageW(d->hpedt[i], EM_SETSEL, 0, (LPARAM)(-1));
+            return 0;
+        }
+        d->val[i] = v;
+    }
+    return 1;
+}
+
+/* 参数赋值行 + 指定的方程正文 → g_eq_buf。
+   分段模板（凸轮）额外追加 rest = 360-b1-b2-b3（近休止角），
+   这样近休段的方程可以写成 theta = b1+b2+b3+rest*t，
+   无论用户把三种角加成多少都不会退化成零长度曲线（下限钳到 0.5°）。 */
+static int HEqBuildBody(HEqDlg *d, const HEqTpl *t, const wchar_t *body)
+{
+    int i, pos;
+
+    if (d == NULL || t == NULL || body == NULL)
+        return 0;
+
+    g_eq_buf[0] = L'\0';
+    pos = 0;
+    for (i = 0; i < t->nprm; i++)
+    {
+        pos = HAppend(g_eq_buf, H_EQ_MAX, pos, L"%ls = %g\n",
+                      t->prm[i].var, d->val[i]);
+        if (pos < 0)
+            return 0;
+    }
+    if (t->nseg > 0 && t->nprm >= 5)
+    {
+        double rest = 360.0 - d->val[2] - d->val[3] - d->val[4];
+
+        if (rest < 0.5)
+            rest = 0.5;
+        HLog("HEqBuildBody: rest=%g (b1=%g b2=%g b3=%g)\n",
+             rest, d->val[2], d->val[3], d->val[4]);
+        pos = HAppend(g_eq_buf, H_EQ_MAX, pos, L"rest = %g\n", rest);
+        if (pos < 0)
+            return 0;
+    }
+    pos = HAppend(g_eq_buf, H_EQ_MAX, pos, L"\n%ls\n", body);
+    return (pos < 0) ? 0 : 1;
+}
+
+/* 参数赋值行 + 方程正文 → g_eq_buf，坐标系名 → g_csys_name */
+static int HEqBuild(HEqDlg *d, int *p_type)
+{
+    const HEqTpl *t;
+
+    if (d == NULL || p_type == NULL)
+        return 0;
+    if (d->tpl < 0 || d->tpl >= H_EQ_TPL_N)
+        return 0;
+    t = &g_eqtpl[d->tpl];
+    if (t->ctype < 0 || (t->nseg <= 0 && t->eq == NULL) || t->nseg > 8)
+        return 0;
+
+    *p_type = t->ctype;
+
+    wcsncpy(g_csys_name, d->csysname, H_CSYS_MAX - 1);
+    g_csys_name[H_CSYS_MAX - 1] = L'\0';
+    g_csys_sel_id = (d->csyspick > 0 && d->csyspick <= g_csys_cnt)
+                    ? g_csys_list[d->csyspick - 1].id : 0;
+    HLog("HEqBuild: csyspick=%d csys_id=%d\n", d->csyspick, g_csys_sel_id);
+
+    if (!HEqBuildBody(d, t, (t->nseg > 0) ? t->segeq[0] : t->eq))
+        return 0;
+
+    HLog("HEqBuild: tpl=%d nprm=%d type=%d nseg=%d eq_len=%d\n",
+         d->tpl, t->nprm, t->ctype, t->nseg, (int)wcslen(g_eq_buf));
+    return 1;
+}
+
+static void HEqDlgLayout(HWND hwnd, HEqDlg *d)
+{
+    RECT rc;
+    int  cw, ch, i, y, pad, lw, rx, ew, bh, row, np, top;
+
+    GetClientRect(hwnd, &rc);
+    cw = rc.right;
+    ch = rc.bottom;
+    if (d == NULL)
+        return;
+
+    pad = HSL(d, 12);
+    lw  = HSL(d, 246);                 /* 左侧列表宽 */
+    rx  = pad + lw + HSL(d, 14);       /* 右侧列起点 */
+    ew  = HSL(d, 118);                 /* 参数输入框宽 */
+    bh  = HSL(d, 28);                  /* 按钮高 */
+    row = HSL(d, 32);                  /* 参数行高 */
+
+    /* 当前模板真正有几个参数：只按这个数让位，否则 3 参数的模板
+       下面会空出一大块（原来固定按 6 行算）。 */
+    np = 0;
+    if (d->tpl >= 0 && d->tpl < H_EQ_TPL_N)
+        np = g_eqtpl[d->tpl].nprm;
+    if (np < 0)
+        np = 0;
+    if (np > HED_MAX_PRM)
+        np = HED_MAX_PRM;
+
+    if (cw < rx + HSL(d, 230) || ch < HSL(d, 400))
+        return;
+
+    top = pad + HSL(d, 142);           /* 参数区起点：标题 24 + 说明 104 之后 */
+
+    MoveWindow(d->hlist, pad, pad, lw, ch - pad - HSL(d, 52), TRUE);
+    MoveWindow(d->hinfo, rx, pad, cw - rx - pad, HSL(d, 24), TRUE);
+    MoveWindow(d->hdesc, rx, pad + HSL(d, 30), cw - rx - pad, HSL(d, 104), TRUE);
+    for (i = 0; i < HED_MAX_PRM; i++)
+    {
+        y = top + i * row;
+        MoveWindow(d->hplab[i], rx, y + HSL(d, 5), HSL(d, 150), HSL(d, 20), TRUE);
+        MoveWindow(d->hpedt[i], rx + HSL(d, 158), y, ew, HSL(d, 24), TRUE);
+    }
+    y = top + np * row;                /* 坐标系行紧跟最后一个真实参数 */
+    MoveWindow(d->hcsysl, rx, y + HSL(d, 5), HSL(d, 150), HSL(d, 20), TRUE);
+    MoveWindow(d->hcsys, rx + HSL(d, 158), y, HSL(d, 226), HSL(d, 220), TRUE);
+
+    y = y + row + HSL(d, 4);           /* 提示文字吃掉剩下的高度，不留空白 */
+    {
+        int th = ch - y - HSL(d, 50);
+
+        /* 提示区现在常驻 3~4 行（用法 + 非闭合/投影提醒），
+           上限从 104 提到 150，否则 5~6 个参数的模板会把提醒切掉。 */
+        if (th > HSL(d, 150))
+            th = HSL(d, 150);
+        if (th < HSL(d, 40))
+            th = HSL(d, 40);
+        MoveWindow(d->htip, rx, y, cw - rx - pad, th, TRUE);
+    }
+    MoveWindow(d->hok, cw - HSL(d, 200), ch - HSL(d, 40), HSL(d, 90), bh, TRUE);
+    MoveWindow(d->hcan, cw - HSL(d, 102), ch - HSL(d, 40), HSL(d, 90), bh, TRUE);
+}
+
+static HWND HEdCtl(HWND par, const wchar_t *cls, const wchar_t *txt,
+                   DWORD style, int x, int y, int w, int h, int id, HFONT f)
+{
+    HWND c = CreateWindowExW(0, cls, txt, style, x, y, w, h, par,
+                             (HMENU)(INT_PTR)id,
+                             (HINSTANCE)GetWindowLongPtrW(par, GWLP_HINSTANCE),
+                             NULL);
+
+    if (c != NULL && f != NULL)
+        SendMessageW(c, WM_SETFONT, (WPARAM)f, TRUE);
+    return c;
+}
+
+static LRESULT CALLBACK HEqDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    HEqDlg *d = (HEqDlg *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (msg)
+    {
+    case WM_CREATE:
+    {
+        CREATESTRUCTW *cs = (CREATESTRUCTW *)lp;
+        int            i;
+
+        d = (HEqDlg *)cs->lpCreateParams;
+        if (d == NULL)
+            return -1;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)d);
+        d->hwnd = hwnd;
+
+        d->font = CreateFontW(-HSL(d, 16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                              DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
+        if (d->font == NULL)
+            d->font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+        d->hlist = HEdCtl(hwnd, L"LISTBOX", L"",
+                          WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_BORDER
+                          | LBS_NOTIFY, 12, 12, 232, 380, HED_LIST, d->font);
+        d->hinfo = HEdCtl(hwnd, L"STATIC", L"",
+                          WS_CHILD | WS_VISIBLE | SS_LEFT,
+                          256, 10, 380, 24, HED_INFO, d->font);
+        d->hdesc = HEdCtl(hwnd, L"STATIC", L"",
+                          WS_CHILD | WS_VISIBLE | SS_LEFT,
+                          256, 36, 380, 56, HED_DESC, d->font);
+        for (i = 0; i < HED_MAX_PRM; i++)
+        {
+            d->hplab[i] = HEdCtl(hwnd, L"STATIC", L"",
+                                 WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                 256, 0, 148, 20, HED_PLAB(i), d->font);
+            d->hpedt[i] = HEdCtl(hwnd, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | WS_BORDER
+                                 | ES_AUTOHSCROLL, 408, 0, 120, 24,
+                                 HED_PEDT(i), d->font);
+        }
+        d->hcsysl = HEdCtl(hwnd, L"STATIC", L"坐标系",
+                           WS_CHILD | WS_VISIBLE | SS_LEFT,
+                           328, 0, 160, 22, HED_CSYSL, d->font);
+        d->hcsys  = HEdCtl(hwnd, L"COMBOBOX", L"",
+                           WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_BORDER
+                           | CBS_DROPDOWNLIST, 496, 0, 300, 260,
+                           HED_CSYS, d->font);
+        d->htip   = HEdCtl(hwnd, L"STATIC", L"",
+                           WS_CHILD | WS_VISIBLE | SS_LEFT,
+                           256, 0, 380, 44, HED_TIP, d->font);
+        d->hok    = HEdCtl(hwnd, L"BUTTON", L"生成曲线",
+                           WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                           0, 0, 96, 30, HED_OK, d->font);
+        d->hcan   = HEdCtl(hwnd, L"BUTTON", L"取消",
+                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                           0, 0, 96, 30, HED_CAN, d->font);
+
+        if (d->hlist == NULL || d->hok == NULL || d->hpedt[0] == NULL)
+        {
+            HLog("HEqDlg: create controls failed\n");
+            return -1;
+        }
+
+        for (i = 0; i < H_EQ_TPL_N; i++)
+            SendMessageW(d->hlist, LB_ADDSTRING, 0, (LPARAM)g_eqtpl[i].title);
+
+        /* 坐标系下拉：第 0 项 = 默认（模型里第一个），后面是模型里全部坐标系 */
+        SendMessageW(d->hcsys, CB_ADDSTRING, 0,
+                     (LPARAM)L"（默认）模型里第一个坐标系");
+        for (i = 0; i < g_csys_cnt; i++)
+        {
+            wchar_t txt[H_CSYS_MAX + 32];
+
+            if (g_csys_list[i].name[0] != L'\0')
+                swprintf(txt, H_CSYS_MAX + 32, L"%ls", g_csys_list[i].name);
+            else
+                swprintf(txt, H_CSYS_MAX + 32, L"坐标系 #%d", g_csys_list[i].id);
+            SendMessageW(d->hcsys, CB_ADDSTRING, 0, (LPARAM)txt);
+        }
+        SendMessageW(d->hcsys, CB_SETCURSEL, 0, 0);
+
+        d->tpl = 0;
+        SendMessageW(d->hlist, LB_SETCURSEL, 0, 0);
+        HEqDlgSync(d);
+        HEqDlgLayout(hwnd, d);
+        return 0;
+    }
+
+    case WM_SIZE:
+        HEqDlgLayout(hwnd, d);
+        return 0;
+
+    case WM_GETMINMAXINFO:
+    {
+        MINMAXINFO *mm = (MINMAXINFO *)lp;
+
+        if (mm != NULL)
+        {
+            int k = (d != NULL && d->sc > 0) ? d->sc : g_heq_sc;
+
+            mm->ptMinTrackSize.x = MulDiv(620, k, 100);
+            mm->ptMinTrackSize.y = MulDiv(420, k, 100);
+        }
+        return 0;
+    }
+
+    case WM_COMMAND:
+    {
+        int id   = LOWORD(wp);
+        int code = HIWORD(wp);
+
+        if (d == NULL)
+            break;
+        if (id == HED_LIST && code == LBN_SELCHANGE)
+        {
+            int sel = (int)SendMessageW(d->hlist, LB_GETCURSEL, 0, 0);
+
+            if (sel >= 0 && sel < H_EQ_TPL_N)
+            {
+                d->tpl = sel;
+                HEqDlgSync(d);
+                HEqDlgLayout(hwnd, d);   /* 参数个数变了，坐标系行要跟着上移 */
+            }
+            return 0;
+        }
+        if (id == HED_LIST && code == LBN_DBLCLK)
+        {
+            SendMessageW(hwnd, WM_COMMAND,
+                         MAKEWPARAM(HED_OK, BN_CLICKED), 0);
+            return 0;
+        }
+        if (id == HED_OK)
+        {
+            if (HEqDlgCollect(d))
+            {
+                d->ok   = 1;
+                d->done = 1;
+            }
+            return 0;
+        }
+        if (id == HED_CAN)
+        {
+            d->done = 1;
+            return 0;
+        }
+        break;
+    }
+
+    case WM_CLOSE:
+        if (d != NULL)
+            d->done = 1;
+        return 0;                    /* 自己收尾，不走 DefWindowProc 销毁 */
+
+    case WM_DESTROY:
+        return 0;                    /* 千万别 PostQuitMessage，会杀掉 Creo 的消息循环 */
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+/* 返回值：1 = 点了生成；0 = 取消或建不起来（看 d->created 区分） */
+static int HEqDlgShow(HEqDlg *d)
+{
+    static int  registered = 0;
+    HINSTANCE   hi;
+    HWND        owner;
+    WNDCLASSEXW wc;
+    RECT        rc;
+    MSG         m;
+    int         w, h, x, y;
+
+    memset(d, 0, sizeof(*d));
+    hi = GetModuleHandleW(NULL);
+
+    if (!registered)
+    {
+        memset(&wc, 0, sizeof(wc));
+        wc.cbSize        = sizeof(wc);
+        wc.style         = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc   = HEqDlgProc;
+        wc.hInstance     = hi;
+        wc.hCursor       = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); /* IDC_ARROW */
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"H_EqCurveDlg";
+        if (RegisterClassExW(&wc) == 0
+            && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        {
+            HLog("HEqDlgShow: RegisterClass failed %lu\n",
+                 (unsigned long)GetLastError());
+            return 0;
+        }
+        registered = 1;
+    }
+
+    /* ★ 整套 UI 按系统 DPI 放大。原来写死 880x560 + 15px 字体，
+       在 175% 缩放屏上相当于 6.5pt，根本看不清。 */
+    {
+        HDC hdc = GetDC(NULL);
+        int dpi = (hdc != NULL) ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
+
+        if (hdc != NULL)
+            ReleaseDC(NULL, hdc);
+        if (dpi <= 0)
+            dpi = 96;
+        d->sc = MulDiv(dpi, 100, 96);
+        if (d->sc < 100)                 /* 低 DPI 不缩小，只放大 */
+            d->sc = 100;
+        if (d->sc > 300)
+            d->sc = 300;
+        HLog("HEqDlgShow: dpi=%d scale=%d%%\n", dpi, d->sc);
+    }
+    g_heq_sc = d->sc;
+
+    rc.left   = 0;
+    rc.top    = 0;
+    rc.right  = HSL(d, 780);             /* 基础客户区 780x540 (96dpi 口径)
+                                            2026-10-23：470 → 540，给下面常驻的
+                                            「非闭合 / 先投影」提醒腾出 2 行高度 */
+    rc.bottom = HSL(d, 540);
+    AdjustWindowRectEx(&rc, WS_POPUP | WS_CAPTION | WS_SYSMENU
+                       | WS_THICKFRAME | WS_MAXIMIZEBOX, FALSE,
+                       WS_EX_DLGMODALFRAME);
+    w = rc.right - rc.left;
+    h = rc.bottom - rc.top;
+    {
+        RECT wa;                          /* 放不下就收到工作区内，别出屏 */
+        int  aw, ah;
+
+        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0))
+        {
+            aw = wa.right - wa.left;
+            ah = wa.bottom - wa.top;
+            /* 上限：宽不超过工作区 62%，高不超过 76%，避免 DPI 一放大就霸屏 */
+            if (w > aw * 62 / 100)
+                w = aw * 62 / 100;
+            if (h > ah * 76 / 100)
+                h = ah * 76 / 100;
+        }
+    }
+
+    owner = GetActiveWindow();
+    {
+        RECT orc;
+
+        if (owner != NULL && GetWindowRect(owner, &orc)
+            && (orc.right - orc.left) > 200)
+        {
+            x = orc.left + ((orc.right - orc.left) - w) / 2;
+            y = orc.top + ((orc.bottom - orc.top) - h) / 2;
+        }
+        else
+        {
+            x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
+            y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
+        }
+    }
+
+    d->hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"H_EqCurveDlg",
+                              L"方程曲线 — 选模板 / 改参数 / 生成",
+                              WS_POPUP | WS_CAPTION | WS_SYSMENU
+                              | WS_THICKFRAME | WS_MAXIMIZEBOX,
+                              x, y, w, h, owner, NULL, hi, d);
+    if (d->hwnd == NULL)
+    {
+        HLog("HEqDlgShow: CreateWindow failed %lu\n",
+             (unsigned long)GetLastError());
+        return 0;
+    }
+    d->created = 1;
+
+    if (owner != NULL)
+        EnableWindow(owner, FALSE);
+    ShowWindow(d->hwnd, SW_SHOW);
+    UpdateWindow(d->hwnd);
+    SetForegroundWindow(d->hwnd);
+
+    while (d->done == 0 && GetMessageW(&m, NULL, 0, 0) > 0)
+    {
+        if (!IsDialogMessageW(d->hwnd, &m))
+        {
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+    }
+
+    if (owner != NULL)
+    {
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+    }
+    if (IsWindow(d->hwnd))
+        DestroyWindow(d->hwnd);
+    d->hwnd = NULL;
+    if (d->font != NULL && d->font != (HFONT)GetStockObject(DEFAULT_GUI_FONT))
+        DeleteObject(d->font);
+    d->font = NULL;
+
+    HLog("HEqDlgShow: ok=%d tpl=%d created=%d\n", d->ok, d->tpl, d->created);
+    return d->ok;
+}
+
+/* 创建失败时把整棵树走一遍，逐元素收集诊断信息
+   （ProElementDiagnosticsCollect 能给到"这个元素缺什么/值不合法"，
+   比 ProErrorlist 有用得多——实测 errs.error_number 经常是 0）。 */
+static ProError HEqDiagVisit(ProElement elem_tree, ProElement elem,
+                             ProElempath elem_path, ProAppData appdata)
+{
+    ProElemdiagnostic  *diags = NULL;
+    ProError            st;
+    ProElemId           id   = (ProElemId)0;
+    ProDiagnosticSeverity sev;
+    ProComment          msg;
+    int                 n = 0, i;
+
+    (void)elem_tree;
+    (void)elem_path;
+    (void)appdata;
+
+    ProElementIdGet(elem, &id);
+    st = ProElementDiagnosticsCollect(elem, &diags);
+    if (st != PRO_TK_NO_ERROR || diags == NULL)
+        return PRO_TK_NO_ERROR;
+
+    ProArraySizeGet((ProArray)diags, &n);
+    for (i = 0; i < n; i++)
+    {
+        memset(msg, 0, sizeof(msg));
+        sev = PRO_ELEM_INFO;
+        ProElemdiagnosticSeverityGet(diags[i], &sev);
+        ProElemdiagnosticMessageGet(diags[i], msg);
+        HLog("HEqCurveAct:   DIAG elem=%d sev=%d msg=", (int)id, (int)sev);
+        HLogW("", msg);
+    }
+    ProElemdiagnosticProarrayFree(diags);
+    return PRO_TK_NO_ERROR;
+}
+
+static void HEqDiagDump(ProElement tree)
+{
+    if (tree == NULL)
+        return;
+    ProElemtreeElementVisit(tree, NULL, NULL, HEqDiagVisit, NULL);
+}
+
+/* 引用本身的诊断：ProReferenceSet 成功只说明"存进去了"，
+   不代表这条引用在模型里解析得通（比如 id 指向的对象类型不对）。
+   ProReferenceDiagnosticsCollect 会把这类问题以 warning/error 报出来。 */
+static void HEqRefDiag(ProReference ref)
+{
+    ProElemdiagnostic    *diags = NULL;
+    ProError              st;
+    ProDiagnosticSeverity sev;
+    ProComment            msg;
+    int                   n = 0, i;
+
+    if (ref == NULL)
+        return;
+    st = ProReferenceDiagnosticsCollect(ref, &diags);
+    if (st != PRO_TK_NO_ERROR || diags == NULL)
+    {
+        HLog("HEqRefDiag: collect -> %d (no diag)\n", (int)st);
+        return;
+    }
+    ProArraySizeGet((ProArray)diags, &n);
+    HLog("HEqRefDiag: %d diag\n", n);
+    for (i = 0; i < n; i++)
+    {
+        memset(msg, 0, sizeof(msg));
+        sev = PRO_ELEM_INFO;
+        ProElemdiagnosticSeverityGet(diags[i], &sev);
+        ProElemdiagnosticMessageGet(diags[i], msg);
+        HLog("HEqRefDiag:   sev=%d msg=", (int)sev);
+        HLogW("", msg);
+    }
+    ProElemdiagnosticProarrayFree(diags);
+}
+
+/* 回读：把 Creo 真正存下来的方程文本读出来。
+   动机（2026-10-23 截图）：在 Creo 的方程编辑器里，开头 5 行参数定义 + 那个空行
+   全都不见了，只剩从 theta = t*360 开始的部分。要确认这是"显示问题"还是
+   "存进去就被改写" —— 只有回读能证明。 */
+typedef struct
+{
+    int found;
+    int len;
+} HEqReadCtx;
+
+static ProError HEqReadVisit(ProElement elem_tree, ProElement elem,
+                             ProElempath elem_path, ProAppData appdata)
+{
+    ProElemId   id = (ProElemId)0;
+    HEqReadCtx *c  = (HEqReadCtx *)appdata;
+    wchar_t    *v  = NULL;
+    ProError    st;
+
+    (void)elem_tree;
+    (void)elem_path;
+    if (c == NULL || c->found)
+        return PRO_TK_NO_ERROR;
+    ProElementIdGet(elem, &id);
+    if (id != PRO_E_CRV_ENTER_EQUATION)
+        return PRO_TK_NO_ERROR;
+
+    st = ProElementWstringGet(elem, NULL, &v);
+    if (st != PRO_TK_NO_ERROR || v == NULL)
+    {
+        HLog("HEqReadBack: wstringGet -> %d\n", (int)st);
+        return PRO_TK_NO_ERROR;
+    }
+    c->found = 1;
+    c->len   = (int)wcslen(v);
+    HLog("HEqReadBack: stored len=%d\n", c->len);
+    HLogW("HEqReadBack: stored text =\n", v);
+    ProWstringFree(v);
+    return PRO_TK_NO_ERROR;
+}
+
+static void HEqReadBackEq(ProFeature *p_feat)
+{
+    ProElement tree = NULL;
+    HEqReadCtx c;
+    ProError   st;
+
+    if (p_feat == NULL)
+        return;
+    memset(&c, 0, sizeof(c));
+    st = ProFeatureElemtreeExtract(p_feat, NULL, PRO_FEAT_EXTRACT_NO_OPTS, &tree);
+    if (st != PRO_TK_NO_ERROR || tree == NULL)
+    {
+        HLog("HEqReadBack: extract -> %d\n", (int)st);
+        return;
+    }
+    ProElemtreeElementVisit(tree, NULL, NULL, HEqReadVisit, (ProAppData)&c);
+    ProElementFree(&tree);
+    HLog("HEqReadBack: done found=%d len=%d\n", c.found, c.len);
+}
+
+/*=========================================================================
+   9) 方程曲线的自检工具（只在失败路径上跑，正常创建不碰）
+
+   背景（2026-10-23）：options 和坐标系 id 都修好后，`create -> 0` 成功了，
+   但 Creo 报「重新生成失败：EQ_CURVE」。也就是说元素树和引用都对，是
+   **方程文本求值** 这一步过不去，而 ProFeatureWithoptionsCreate 对此只返回 0
+   （特征建出来了，但处于失败状态），errs 依旧是空。
+
+   所以要自己判断"建成了但失败"：ProSolidFailedfeaturesList 拿失败特征 id 表。
+   再用一组内置方程逐个试，哪个构造过不去就一目了然（试完立刻删掉，不留垃圾）。
+   ======================================================================== */
+
+/* 某特征是否在失败列表里 */
+static int HEqFeatureFailed(ProSolid solid, int feat_id)
+{
+    int     *ids = NULL;
+    int      n = 0, i, hit = 0;
+    ProError st;
+
+    if (solid == NULL || feat_id <= 0)
+        return 0;
+    st = ProSolidFailedfeaturesList(solid, &ids, NULL, NULL);
+    if (st == PRO_TK_NO_ERROR && ids != NULL)
+    {
+        ProArraySizeGet((ProArray)ids, &n);
+        for (i = 0; i < n; i++)
+        {
+            if (ids[i] == feat_id)
+                hit = 1;
+        }
+        ProArrayFree((ProArray *)&ids);
+    }
+    HLog("HEqFeatureFailed: id=%d hit=%d n=%d st=%d\n",
+         feat_id, hit, n, (int)st);
+    return hit;
+}
+
+/* 建一条方程曲线（探针/自检共用）。p_feat 回传特征，后续判失败/删除用。 */
+static ProError HEqCreateCurveEx(ProSelection model_sel, ProModelitem *p_csys,
+                                 int csys_type, const wchar_t *name,
+                                 const wchar_t *eq, ProFeature *p_feat)
+{
+    ProElement              tree = NULL, e = NULL;
+    ProFeatureCreateOptions *opts = NULL;
+    ProReference            pref = NULL;
+    ProFeature              feat;
+    ProErrorlist            errs;
+    ProError                st;
+
+    if (model_sel == NULL || p_csys == NULL || eq == NULL)
+        return PRO_TK_BAD_INPUTS;
+
+    st = ProElementAlloc(PRO_E_FEATURE_TREE, &tree);
+    if (st != PRO_TK_NO_ERROR || tree == NULL)
+        return PRO_TK_GENERAL_ERROR;
+
+    HEqAddInt(tree, PRO_E_FEATURE_TYPE, PRO_FEAT_CURVE);
+    HEqAddInt(tree, PRO_E_CURVE_TYPE, PRO_CURVE_TYPE_FROM_EQUATION);
+    HEqAddWstring(tree, PRO_E_STD_FEATURE_NAME, (wchar_t *)name);
+
+    st = ProElementAlloc(PRO_E_CRV_FR_EQ_REF_CSYS, &e);
+    if (st == PRO_TK_NO_ERROR && e != NULL)
+    {
+        st = ProReferenceAlloc(&pref);
+        if (st == PRO_TK_NO_ERROR && pref != NULL)
+            st = ProReferenceSet(pref, NULL, p_csys);
+        if (st == PRO_TK_NO_ERROR && pref != NULL)
+            st = ProElementReferenceSet(e, pref);
+        if (st == PRO_TK_NO_ERROR)
+            st = ProElemtreeElementAdd(tree, NULL, e);
+        if (st != PRO_TK_NO_ERROR)
+            ProElementFree(&e);
+    }
+    HEqAddInt(tree, PRO_E_CRV_FR_EQ_CSYS_TYPE, csys_type);
+    HEqAddDouble(tree, PRO_E_CRV_FR_EQ_PARAM_MIN, 0.0);
+    HEqAddDouble(tree, PRO_E_CRV_FR_EQ_PARAM_MAX, 1.0);
+    HEqAddWstring(tree, PRO_E_CRV_ENTER_EQUATION, (wchar_t *)eq);
+
+    st = ProArrayAlloc(1, sizeof(ProFeatureCreateOptions), 1, (ProArray *)&opts);
+    if (st == PRO_TK_NO_ERROR && opts != NULL)
+    {
+        opts[0] = PRO_FEAT_CR_NO_OPTS;
+        memset(&errs, 0, sizeof(errs));
+        memset(&feat, 0, sizeof(feat));
+        st = ProFeatureWithoptionsCreate(model_sel, tree, opts,
+                                         PRO_REGEN_NO_FLAGS, &feat, &errs);
+        if (p_feat != NULL && st == PRO_TK_NO_ERROR)
+            *p_feat = feat;
+        HLog("HEqCreateCurveEx[%ls]: create -> %d (errs=%d) feat=%d\n",
+             name, (int)st, errs.error_number, feat.id);
+        ProArrayFree((ProArray *)&opts);
+    }
+    else
+    {
+        st = PRO_TK_GENERAL_ERROR;
+    }
+
+    ProElementFree(&tree);
+    if (pref != NULL)
+        ProReferenceFree(pref);
+    return st;
+}
+
+/* 删掉一条自检曲线，别在模型树里留垃圾 */
+static void HEqDeleteFeat(ProSolid solid, int feat_id)
+{
+    ProError st;
+
+    if (solid == NULL || feat_id <= 0)
+        return;
+    st = ProFeatureDelete(solid, &feat_id, 1, NULL, 0);
+    HLog("HEqDeleteFeat: id=%d -> %d\n", feat_id, (int)st);
+}
+
+/* 内置方程自检：逐个建、看是否失败、立刻删。
+   结果形如  HEqSelfTest: [T1-cyl-basic] create=0 failed=0  —— failed=0 就是这种写法能过。 */
+typedef struct
+{
+    const wchar_t *tag;
+    int            ctype;    /* 0=笛卡尔 1=圆柱 2=球 */
+    const wchar_t *eq;
+} HEqTest;
+
+static const HEqTest g_eqtests[] =
+{
+    { L"T0-cart-3line", 0,
+      L"x = t*10\n"
+      L"y = 5*sin(t*360)\n"
+      L"z = 0" },
+
+    { L"T1-cyl-basic", 1,
+      L"r = 40\n"
+      L"theta = t*360\n"
+      L"z = 0" },
+
+    { L"T2-cyl-sin", 1,
+      L"theta = t*360\n"
+      L"r = 20+20*sin(theta)\n"
+      L"z = 0" },
+
+    { L"T3-cyl-param", 1,
+      L"r0 = 40\n"
+      L"h = 20\n"
+      L"theta = t*360\n"
+      L"r = r0+h*sin(theta)\n"
+      L"z = 0" },
+
+    { L"T4-if-noelse", 1,
+      L"theta = t*360\n"
+      L"r = 40\n"
+      L"if theta <= 180\n"
+      L"r = 60\n"
+      L"endif\n"
+      L"z = 0" },
+
+    { L"T5-if-else", 1,
+      L"theta = t*360\n"
+      L"if theta <= 180\n"
+      L"r = 60\n"
+      L"else\n"
+      L"r = 40\n"
+      L"endif\n"
+      L"z = 0" },
+
+    { L"T6-if-nested", 1,
+      L"theta = t*360\n"
+      L"if theta <= 90\n"
+      L"  r = 60\n"
+      L"else\n"
+      L"  if theta <= 180\n"
+      L"    r = 50\n"
+      L"  else\n"
+      L"    r = 40\n"
+      L"  endif\n"
+      L"endif\n"
+      L"z = 0" },
+
+    /* 大写关键字：Creo 关系里 IF/ELSE/ENDIF 的大小写是否敏感，用这条验 */
+    { L"T7-if-upper", 1,
+      L"theta = t*360\n"
+      L"r = 40\n"
+      L"IF theta <= 180\n"
+      L"  r = 60\n"
+      L"ENDIF\n"
+      L"z = 0" },
+
+    /* 只有空行、没有 if：验"空行会不会让前面整段失效" */
+    { L"T8-blankline", 1,
+      L"r0 = 40\n"
+      L"h = 20\n"
+      L"\n"
+      L"r = r0+h\n"
+      L"theta = t*360\n"
+      L"z = 0" },
+
+    /* 哥特式沟道模板用到 sqrt；下面两条专门验函数支持面，别等模板挂了才查 */
+    { L"T9-sqrt", 0,
+      L"a = 5\n"
+      L"b = sqrt(a*a-9)\n"
+      L"x = b*t\n"
+      L"y = 0\n"
+      L"z = 0" },
+
+    { L"T10-asin", 0,
+      L"a = 0.5\n"
+      L"b = asin(a)\n"
+      L"x = b*t\n"
+      L"y = 0\n"
+      L"z = 0" },
+};
+
+static void HEqSelfTest(ProSelection model_sel, ProModelitem *p_csys,
+                        ProSolid solid)
+{
+    int       i;
+    int       n = (int)(sizeof(g_eqtests) / sizeof(g_eqtests[0]));
+    ProFeature feat;
+    ProError  st;
+    int       failed;
+
+    HLog("HEqSelfTest: start (%d cases)\n", n);
+    for (i = 0; i < n; i++)
+    {
+        memset(&feat, 0, sizeof(feat));
+        failed = 0;
+        st = HEqCreateCurveEx(model_sel, p_csys, g_eqtests[i].ctype,
+                              g_eqtests[i].tag, g_eqtests[i].eq, &feat);
+        if (st == PRO_TK_NO_ERROR)
+        {
+            HEqReadBackEq(&feat);                 /* Creo 到底存了什么 */
+            failed = HEqFeatureFailed(solid, feat.id);
+        }
+        HLog("HEqSelfTest: [%ls] create=%d failed=%d\n",
+             g_eqtests[i].tag, (int)st, failed);
+        if (st == PRO_TK_NO_ERROR && feat.id > 0)
+            HEqDeleteFeat(solid, feat.id);
+    }
+    HLog("HEqSelfTest: end\n");
+}
+
+/* 建特征失败（连特征都没建出来）时的单发探针 */
+static ProError HEqProbeCreate(ProSelection model_sel, ProModelitem *p_csys)
+{
+    ProFeature feat;
+    ProError   st;
+
+    memset(&feat, 0, sizeof(feat));
+    st = HEqCreateCurveEx(model_sel, p_csys, 0, L"EQ_PROBE",
+                          L"x = t*10\ny = 0\nz = 0", &feat);
+    HLog("HEqProbe: create -> %d feat=%d\n", (int)st, feat.id);
+    return st;
+}
+
+static int HEqCurveAct(uiCmdCmdId command, uiCmdValue *p_value,
                        void *p_push_command_data)
 {
-    ProMdl     mdl  = NULL;
-    ProMdlType type = PRO_MDL_UNUSED;
-    ProSimprep rep;
-    ProError   status;
+    ProMdl        mdl  = NULL;
+    ProMdlType    mtype = PRO_MDL_UNUSED;
+    ProModelitem  item;
+    ProSelection  model_sel = NULL;
+    ProReference  ref = NULL;
+    ProFeature    feat;
+    ProError      st;
+    ProModelitem  csys_item;     /* 坐标系 datum（探针重建引用时还要用） */
+    wchar_t      *txt = NULL;
+    HCsysFind     find;
+    HEqDlg        dlg;
+    int           csys_type = 0, i;
+    int           ans, use_file = 0;
 
     (void)command;
     (void)p_value;
     (void)p_push_command_data;
 
-    if (HGetSolid3D(&mdl, &type) != PRO_TK_NO_ERROR)
+    if (HGetSolid3D(&mdl, &mtype) != PRO_TK_NO_ERROR)
     {
         HMsg("TD_NOT_3D");
         return 0;
     }
-    if (type != PRO_MDL_ASSEMBLY)
+
+    /* ---- 1) 弹模板选择框：选方程、改参数 ----
+       三条出路：
+         · 点了「生成曲线」且选的是模板  → HEqBuild 拼方程；
+         · 点了「生成曲线」但选的是自定义 → use_file，走下面的文件模式；
+         · 取消                        → 直接返回（不回退，否则用户点了取消
+                                         却凭空建出一条曲线）；
+         · 窗口压根建不起来             → use_file，退回文件模式（防按钮失效）。 */
+    HEqCsysCollect(mdl);          /* 下拉框要列出模型里的坐标系，先枚举一遍 */
+    ans = HEqDlgShow(&dlg);
+    if (ans == 1)
     {
-        HMsg("TD_ASSY_ONLY");
+        if (dlg.tpl < 0 || dlg.tpl >= H_EQ_TPL_N)
+        {
+            HMsg("TD_EQ_FAIL");
+            return 0;
+        }
+        if (g_eqtpl[dlg.tpl].ctype < 0)
+        {
+            use_file = 1;
+        }
+        else if (!HEqBuild(&dlg, &csys_type))
+        {
+            HMsg("TD_EQ_FAIL");
+            return 0;
+        }
+    }
+    else if (dlg.created)
+    {
+        HLog("HEqCurveAct: dialog cancelled by user\n");
+        return 0;
+    }
+    else
+    {
+        use_file = 1;
+        HLog("HEqCurveAct: dialog unavailable, fall back to %s\n", H_EQFILE);
+    }
+
+    /* ---- 2) 自定义模式：读 eq_curve.txt（文件模式 / 回退路径） ---- */
+    if (use_file)
+    {
+        txt = HLoadTextW(H_EQFILE);
+        if (txt == NULL)
+        {
+            HWriteEqTemplate();
+            HLog("HEqCurveAct: no template, created %s\n", H_EQFILE);
+            HMsg("TD_EQ_NOTEMPLATE");
+            ShellExecuteA(NULL, "open", "notepad.exe", H_EQFILE, NULL,
+                          SW_SHOWNORMAL);
+            return 0;
+        }
+        HEqParse(txt, &csys_type);
+        free(txt);
+        txt = NULL;
+    }
+
+    HLog("HEqCurveAct: type=%d csys=", csys_type);
+    HLogW("", g_csys_name);
+    HLog("HEqCurveAct: eq_len=%d file=%d\n", (int)wcslen(g_eq_buf), use_file);
+    if (g_eq_buf[0] == L'\0')
+    {
+        HMsg("TD_EQ_EMPTY");
         return 0;
     }
 
-    memset(&rep, 0, sizeof(rep));
-    status = ProSimprepSelect((ProSolid)mdl, &rep);
-    HLog("HSimpRepAct: select -> %d\n", (int)status);
-    if (status != PRO_TK_NO_ERROR)
+    /* ---- 3) 找坐标系，建 reference ----
+       ★ 2026-10-23 修：原来走 ProSelectionAlloc -> ProSelectionToReference，
+       实测就在这几步里静默失败（日志打到 csys found 就没了，只弹"生成曲线失败"）。
+       现在主路改 ProReferenceAlloc + ProReferenceSet（完全不经过 Selection），
+       失败才退回 Selection 路线，而且每一步都把状态码记进日志。 */
+    memset(&find, 0, sizeof(find));
+    if (g_csys_sel_id > 0)
     {
-        HMsg("TD_CANCEL");
+        /* 下拉框里选定了具体坐标系：直接用 datum id，不再按名字匹配 */
+        find.found = 1;
+        find.id    = g_csys_sel_id;
+        HLog("HEqCurveAct: csys from dialog id=%d\n", find.id);
+    }
+    else
+    {
+        ProSolidCsysVisit((ProSolid)mdl, HCsysFindVisit, NULL,
+                          (ProAppData)&find);
+        HLog("HEqCurveAct: csys found=%d id=%d\n", find.found, find.id);
+    }
+    if (find.found <= 0)
+    {
+        HMsg("TD_EQ_NOCSYS");
         return 0;
     }
 
-    status = ProSimprepActivate((ProSolid)mdl, &rep);
-    HLog("HSimpRepAct: activate -> %d\n", (int)status);
-    if (status != PRO_TK_NO_ERROR)
+    /* ★ 只用 PRO_CSYS 初始化；失败就报错退出，不再退回 PRO_FEATURE
+       —— 那条退路只会造出一条"特征引用"，对 REF_CSYS 元素是无效的。 */
+    memset(&item, 0, sizeof(item));
+    st = ProModelitemInit(mdl, find.id, PRO_CSYS, &item);
+    HLog("HEqCurveAct: itemInit(PRO_CSYS, id=%d) -> %d type=%d id=%d\n",
+         find.id, (int)st, (int)item.type, item.id);
+    if (st != PRO_TK_NO_ERROR)
     {
-        HMsg("TD_SIMPREP_FAIL");
+        HMsg("TD_EQ_NOCSYS");
+        return 0;
+    }
+    csys_item = item;            /* 存一份：下面 item 会被 modelitem 覆盖 */
+
+    st = ProReferenceAlloc(&ref);
+    HLog("HEqCurveAct: refAlloc -> %d\n", (int)st);
+    if (st == PRO_TK_NO_ERROR && ref != NULL)
+    {
+        st = ProReferenceSet(ref, NULL, &item);
+        HLog("HEqCurveAct: refSet(local) -> %d\n", (int)st);
+        if (st != PRO_TK_NO_ERROR)
+        {
+            ProReferenceFree(ref);
+            ref = NULL;
+        }
+    }
+    if (ref == NULL)
+    {
+        /* 退路：Selection 转 Reference */
+        ProSelection tmp_sel = NULL;
+
+        st = ProSelectionAlloc(NULL, &item, &tmp_sel);
+        HLog("HEqCurveAct: selAlloc(csys) -> %d\n", (int)st);
+        if (st == PRO_TK_NO_ERROR && tmp_sel != NULL)
+        {
+            st = ProSelectionToReference(tmp_sel, &ref);
+            HLog("HEqCurveAct: selToRef -> %d\n", (int)st);
+            ProSelectionFree(&tmp_sel);
+        }
+    }
+    if (ref == NULL)
+    {
+        HMsg("TD_EQ_FAIL");
+        return 0;
+    }
+    HEqRefDiag(ref);             /* 引用建好先自检一遍 */
+
+    /* ---- 3b) 建特征用的 model selection ---- */
+    st = ProMdlToModelitem(mdl, &item);
+    HLog("HEqCurveAct: mdlToModelitem -> %d type=%d id=%d\n",
+         (int)st, (int)item.type, item.id);
+    if (st == PRO_TK_NO_ERROR)
+        st = ProSelectionAlloc(NULL, &item, &model_sel);
+    HLog("HEqCurveAct: modelSelAlloc -> %d ok=%d\n", (int)st,
+         (model_sel != NULL) ? 1 : 0);
+    if (st != PRO_TK_NO_ERROR || model_sel == NULL)
+    {
+        ProReferenceFree(ref);
+        HMsg("TD_EQ_FAIL");
         return 0;
     }
 
-    ProSolidDisplay((ProSolid)mdl);
+    /* ---- 4) 创建 ----
+       单曲线模板建 1 条；凸轮模板按运动段建多条（每段一个纯 sin/cos 表达式）。
+       ★ 2026-10-23：方程求值器不接受 if/else/endif —— 大小写、缩进、嵌套、
+         有无 else、单层嵌套全试过，一律"特征建成但重新生成失败"。所以凸轮
+         改成"拆段"：参数 t 映射到本段的角度区间，段与段首尾严格连续。 */
+    {
+        const HEqTpl *tpl  = NULL;
+        int           nseg = 1;
+        int           use_seg = 0;
+        int           nok = 0, nfail = 0, nbad = 0;
+
+        if (!use_file && dlg.tpl >= 0 && dlg.tpl < H_EQ_TPL_N)
+        {
+            tpl     = &g_eqtpl[dlg.tpl];
+            use_seg = 1;
+            nseg    = (tpl->nseg > 0) ? tpl->nseg : 1;
+        }
+
+        for (i = 0; i < nseg; i++)
+        {
+            const wchar_t *nm   = L"EQ_CURVE";
+            const wchar_t *body = NULL;
+
+            if (use_seg && tpl != NULL && tpl->nseg > 0)
+            {
+                nm   = tpl->segname[i];
+                body = tpl->segeq[i];
+                if (nm == NULL || body == NULL
+                    || !HEqBuildBody(&dlg, tpl, body))
+                {
+                    HLog("HEqCurveAct: seg[%d] build FAILED\n", i);
+                    nbad++;
+                    continue;
+                }
+            }
+            /* 单曲线模板 / 文件模式：g_eq_buf 已由 HEqBuild / HEqParse 拼好 */
+
+            HLog("HEqCurveAct: seg[%d/%d] name=", i + 1, nseg);
+            HLogW("", nm);
+            HLog("HEqCurveAct: seg[%d] eq_len=%d\n", i, (int)wcslen(g_eq_buf));
+
+            memset(&feat, 0, sizeof(feat));
+            st = HEqCreateCurveEx(model_sel, &csys_item, csys_type,
+                                  nm, g_eq_buf, &feat);
+            HLog("HEqCurveAct: seg[%d] create -> %d feat=%d\n",
+                 i, (int)st, feat.id);
+            if (st != PRO_TK_NO_ERROR)
+            {
+                nbad++;
+                continue;
+            }
+            if (feat.id > 0 && HEqFeatureFailed((ProSolid)mdl, feat.id))
+            {
+                nfail++;
+                HEqReadBackEq(&feat);      /* Creo 到底怎么存的 */
+            }
+            else
+            {
+                nok++;
+            }
+        }
+
+        HLog("HEqCurveAct: done seg=%d ok=%d failed=%d bad=%d\n",
+             nseg, nok, nfail, nbad);
+
+        if (nfail > 0)
+        {
+            /* 建出来了但求值失败：跑内置方程自检，把是哪种构造过不去打进日志 */
+            HEqSelfTest(model_sel, &csys_item, (ProSolid)mdl);
+            ProReferenceFree(ref);
+            ProSelectionFree(&model_sel);
+            HMsg("TD_EQ_SELFTEST");
+            return 0;
+        }
+        if (nok == 0)
+        {
+            ProReferenceFree(ref);
+            ProSelectionFree(&model_sel);
+            HMsg("TD_EQ_FAIL");
+            return 0;
+        }
+        st = PRO_TK_NO_ERROR;
+    }
+
+    ProReferenceFree(ref);
+    ProSelectionFree(&model_sel);
+
     ProWindowRepaint(PRO_VALUE_UNUSED);
-    HMsg("TD_SIMPREP_OK");
+    HMsg("TD_EQ_OK");
     return 0;
 }
 
-/* 原生绘图注释命令自检：rbn 里这 11 个按钮的 mName 直接写的是
-   Creo 系统命令名，名字必须真实存在，否则按钮不显示。
-   启动时用 ProCmdCmdIdFind 逐个确认，结果写 h_load.log。 */
+/* 原生命令自检：rbn 里这些按钮的 mName 直接写的是 Creo 系统命令名，
+   名字必须真实存在，否则按钮不显示。启动时用 ProCmdCmdIdFind 逐个确认，
+   结果写 h_load.log。2026-10-23 起除绘图注释外，还含「基准」组的
+   修剪 / 投影 / 扫描 三个实体命令。 */
 static const char *g_native_cmds[] =
 {
     "ProCmdDwgShowAllAnnots",
@@ -5301,6 +8386,21 @@ static const char *g_native_cmds[] =
     "ProCmdDwgCrGtolMakeTarg",
     "ProCmdDwgCreateDrftDatum",
     "ProCmdDwgCreateDraftAxis",
+
+    /* 2026-10-23 新增：「基准」组里的三个原生按钮。
+       名字不是猜的，是从本机 Creo 的 trail 里反查出来的 ——
+       trail 记录形如  ~ Command `ProCmdFtXxx`
+       紧跟着一行  Feature title : 扫描 / 投影 / 修剪
+         ProCmdFtTrim    -> 修剪
+         ProCmdFtProject -> 投影
+         ProCmdFtLoft    -> 扫描
+           注意：Creo 4.0 起「扫描」和「混合」合并成一个工具，
+           内部命令名仍沿用 Loft，不是 Sweep。写 ProCmdFtSweep 会找不到。
+       ProCmdSurfSweep 是老版本「曲面扫描」的名字，留一个当备用核对。 */
+    "ProCmdFtTrim",
+    "ProCmdFtProject",
+    "ProCmdFtLoft",
+    "ProCmdSurfSweep",
 };
 
 static void HProbeNativeCmds(void)
@@ -5333,11 +8433,12 @@ int user_initialize(
     uiCmdCmdId  cmd_keydimc;
     uiCmdCmdId  cmd_openworkdir, cmd_setworkdir, cmd_openmdldir, cmd_mdltodir;
     uiCmdCmdId  cmd_purgeold, cmd_eraseidle, cmd_cleanjunk;
-    uiCmdCmdId  cmd_outline, cmd_hide, cmd_unhide, cmd_unhideall;
+    uiCmdCmdId  cmd_outline, cmd_copyname, cmd_hide, cmd_unhide, cmd_unhideall;
     uiCmdCmdId  cmd_togglehide, cmd_hideall;
     uiCmdCmdId  cmd_rename3d, cmd_colorasm, cmd_clearcolor;
-    uiCmdCmdId  cmd_openinplace, cmd_batchbackup, cmd_simprep;
-    uiCmdCmdId  cmd_viewnormal;
+    uiCmdCmdId  cmd_openinplace, cmd_batchbackup;
+    uiCmdCmdId  cmd_openviewinplace, cmd_open3d;
+    uiCmdCmdId  cmd_viewnormal, cmd_eqcrv;
     ProFileName msgfile;
     int         i;
     char        helpkey[PRO_LINE_SIZE];
@@ -5451,6 +8552,14 @@ int user_initialize(
         ProStringToWstring(errbuf, "H: fail to add command");
         return -1;
     }
+    status = ProCmdActionAdd(CMD_COPYNAME, (uiCmdCmdActFn)HCopyNameAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_copyname);
+    HLog("ProCmdActionAdd(CopyName   ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
     status = ProCmdActionAdd(CMD_HIDE, (uiCmdCmdActFn)HHideAct,
         uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_hide);
     HLog("ProCmdActionAdd(Hide       ) -> %d\n", (int)status);
@@ -5523,6 +8632,22 @@ int user_initialize(
         ProStringToWstring(errbuf, "H: fail to add command");
         return -1;
     }
+    status = ProCmdActionAdd(CMD_OPENVIEWINPLACE, (uiCmdCmdActFn)HOpenViewInPlaceAct,
+        uiProe2ndImmediate, HOpenViewAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_openviewinplace);
+    HLog("ProCmdActionAdd(OpenViewInPlace) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
+    status = ProCmdActionAdd(CMD_OPEN3D, (uiCmdCmdActFn)HOpen3DAct,
+        uiProe2ndImmediate, HOpenViewAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_open3d);
+    HLog("ProCmdActionAdd(Open3D    ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
     status = ProCmdActionAdd(CMD_VIEWNORMAL, (uiCmdCmdActFn)HViewNormalAct,
         uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_viewnormal);
     HLog("ProCmdActionAdd(ViewNormal ) -> %d\n", (int)status);
@@ -5539,9 +8664,9 @@ int user_initialize(
         ProStringToWstring(errbuf, "H: fail to add command");
         return -1;
     }
-    status = ProCmdActionAdd(CMD_SIMPREP, (uiCmdCmdActFn)HSimpRepAct,
-        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_simprep);
-    HLog("ProCmdActionAdd(SimpRep    ) -> %d\n", (int)status);
+    status = ProCmdActionAdd(CMD_EQCRV, (uiCmdCmdActFn)HEqCurveAct,
+        uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_eqcrv);
+    HLog("ProCmdActionAdd(EqCurve    ) -> %d\n", (int)status);
     if (status != PRO_TK_NO_ERROR)
     {
         ProStringToWstring(errbuf, "H: fail to add command");
@@ -5630,83 +8755,174 @@ int user_initialize(
         return -1;
     }
 
-    /* 2. 指定命令的标签/帮助来源（按钮文字从 h_msg.txt 读）
-       注意第 4 个参数 description（自定义功能区里的命令描述）：
-       必须传【空字符串】而不是 NULL —— 传 NULL 时 Creo 会去消息
-       文件里查一个空键，查不到就返回 -28（虽然 label/help 其实
-       已经登记成功，按钮也能用，但日志里永远挂着 3 个 -28）。 */
+    /* 1c. 图标
+       ★ 只能走 ProCmdIconSet：rbn 里没有给自定义命令写图标的语法
+         （Creo 自家 .rbn 的按钮图标走内部资源号，外部插件用不了）。
+       ★ 它按【文件名】在三个目录里找：
+             <Creo loadpoint>/text/resource
+             <text_dir>/resource                       ← 我们能用的是这个
+             <text_dir>/<语言>/resource
+         所以图标必须放在 D:\H\text\resource\，且只传文件名不传路径。
+       ★ 尺寸约定（官方头文件原文）：小图 16x16 或 20x20，大图 32x32，
+         文件名不带尺寸后缀；大图叫 <name>_large.png。
+         这些 png 是从 Creo 安装目录 Common Files/text/resource 里挑的、
+         语义最接近的官方图标，由 tools/make_icons.py 统一转成 20/32 两种
+         尺寸后放进 text/resource，可随时重跑重新生成。
+       ★ 图标失败不影响命令本身（返回 -3 = E_NOT_FOUND 就是没找到文件），
+         所以这里只记日志不 return。 */
     {
-        static char empty_desc[PRO_LINE_SIZE] = "";
-        status = ProCmdDesignate(cmd_add, CMD_ADD, CMD_ADD ".Help", empty_desc, msgfile);
+        /* 不能加 static：表里装的是下面这些自动变量（cmd_*）的地址，
+           静态存储期初始化器必须是常量表达式，加了会 C2099。 */
+        const struct { uiCmdCmdId *p; const char *f; } ictab[] = {
+            /* 会话 / 文件 */
+            { &cmd_openworkdir,    "h_openworkdir.png"    },
+            { &cmd_setworkdir,     "h_setworkdir.png"     },
+            { &cmd_openmdldir,     "h_openmdldir.png"     },
+            { &cmd_mdltodir,       "h_mdltodir.png"       },
+            { &cmd_batchbackup,    "h_batchbackup.png"    },
+            { &cmd_purgeold,       "h_purgeold.png"       },
+            { &cmd_eraseidle,      "h_eraseidle.png"      },
+            { &cmd_cleanjunk,      "h_cleanjunk.png"      },
+            { &cmd_export,         "h_export.png"         },
+            /* 模型信息 */
+            { &cmd_rename3d,       "h_rename3d.png"       },
+            { &cmd_copyname,       "h_copyname.png"       },
+            { &cmd_outline,        "h_outline.png"        },
+            /* 显示 / 颜色 */
+            { &cmd_colorasm,       "h_colorasm.png"       },
+            { &cmd_clearcolor,     "h_clearcolor.png"     },
+            { &cmd_viewnormal,     "h_viewnormal.png"     },
+            { &cmd_togglehide,     "h_togglehide.png"     },
+            { &cmd_hide,           "h_hide.png"           },
+            { &cmd_unhide,         "h_unhide.png"         },
+            { &cmd_hideall,        "h_hideall.png"        },
+            { &cmd_unhideall,      "h_unhideall.png"      },
+            /* 装配 / 基准 */
+            { &cmd_openinplace,    "h_openinplace.png"    },
+            { &cmd_eqcrv,          "h_eqcrv.png"          },
+            /* 工程图 */
+            { &cmd_openviewinplace,"h_openviewinplace.png"},
+            { &cmd_open3d,         "h_open3d.png"         },
+            { &cmd_tolbrush,       "h_tolbrush.png"       },
+            { &cmd_techreq,        "h_techreq.png"        },
+            { &cmd_dynaview,       "h_dynaview.png"       },
+            { &cmd_keydim,         "h_keydim.png"         },
+            { &cmd_keydimc,        "h_keydimc.png"        },
+            { &cmd_add,            "h_add.png"            },
+            { &cmd_insert,         "h_insert.png"         },
+            { &cmd_renum,          "h_renum.png"          },
+            { &cmd_delete,         "h_delete.png"         },
+            /* 比例：24 个档位 + 自定义，见下面单独循环 */
+        };
+        int k;
+
+        for (k = 0; k < (int)(sizeof(ictab) / sizeof(ictab[0])); k++)
+        {
+            ProError ist = ProCmdIconSet(*ictab[k].p, (char *)ictab[k].f);
+
+            if (ist != PRO_TK_NO_ERROR)
+                HLog("ProCmdIconSet(%s) -> %d\n", ictab[k].f, (int)ist);
+        }
+
+        /* 24 个固定档位 + 自定义比例共用一套比例图标 */
+        for (k = 0; k < H_SCALE_COUNT; k++)
+        {
+            status = ProCmdIconSet(g_scale_cmd[k], (char *)"h_scale.png");
+            if (status != PRO_TK_NO_ERROR)
+                HLog("ProCmdIconSet(h_scale.png) #%d -> %d\n", k, (int)status);
+        }
+        status = ProCmdIconSet(g_scale_custom_cmd, (char *)"h_scalecustom.png");
+        if (status != PRO_TK_NO_ERROR)
+            HLog("ProCmdIconSet(h_scalecustom.png) -> %d\n", (int)status);
+        HLog("H: icons applied (%d + %d scale)\n",
+             (int)(sizeof(ictab) / sizeof(ictab[0])), H_SCALE_COUNT + 1);
+    }
+
+    /* 2. 指定命令的标签/帮助来源（按钮文字从 h_msg.txt 读）
+       ★ 四个字符串参数全都是【消息文件里的键名】，Creo 会逐个去
+         msgfile 里查；只要有一个查不到，就返回 -28 = PRO_TK_MSG_NOT_FOUND，
+         而且【整条登记作废】—— 直接后果是 Ribbon 按钮只剩图标没有文字
+         （所以 Small 样式下看到光秃秃的图标就是这个原因）。
+         之前第 4 个参数传的是空串 ""，被当成一个键去查，必然查不到 →
+         日志里 51 个 -28。现在改成真实存在的 H_CmdDesc。 */
+    {
+        static char cmd_desc[] = "H_CmdDesc";   /* 见 text/<语言>/h_msg.txt */
+        status = ProCmdDesignate(cmd_add, CMD_ADD, CMD_ADD ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(Add)      -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_insert, CMD_INSERT, CMD_INSERT ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_insert, CMD_INSERT, CMD_INSERT ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(Insert)   -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_renum, CMD_RENUM, CMD_RENUM ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_renum, CMD_RENUM, CMD_RENUM ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(Renumber) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_delete, CMD_DELETE, CMD_DELETE ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_delete, CMD_DELETE, CMD_DELETE ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(Delete)   -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_export, CMD_EXPORT, CMD_EXPORT ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_export, CMD_EXPORT, CMD_EXPORT ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(Export)   -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_dynaview, CMD_DYNAVIEW, CMD_DYNAVIEW ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_dynaview, CMD_DYNAVIEW, CMD_DYNAVIEW ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(DynaView) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_tolbrush, CMD_TOLBRUSH, CMD_TOLBRUSH ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_tolbrush, CMD_TOLBRUSH, CMD_TOLBRUSH ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(TolBrush) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_techreq, CMD_TECHREQ, CMD_TECHREQ ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_techreq, CMD_TECHREQ, CMD_TECHREQ ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(TechReq)  -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_keydim, CMD_KEYDIM, CMD_KEYDIM ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_keydim, CMD_KEYDIM, CMD_KEYDIM ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(KeyDim)   -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_keydimc, CMD_KEYDIMC, CMD_KEYDIMC ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_keydimc, CMD_KEYDIMC, CMD_KEYDIMC ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(KeyDimC)  -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_openworkdir, CMD_OPENWORKDIR, CMD_OPENWORKDIR ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_openworkdir, CMD_OPENWORKDIR, CMD_OPENWORKDIR ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(OpenWorkDir) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_setworkdir, CMD_SETWORKDIR, CMD_SETWORKDIR ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_setworkdir, CMD_SETWORKDIR, CMD_SETWORKDIR ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(SetWorkDir ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_openmdldir, CMD_OPENMDLDIR, CMD_OPENMDLDIR ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_openmdldir, CMD_OPENMDLDIR, CMD_OPENMDLDIR ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(OpenMdlDir ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_mdltodir, CMD_MDLTODIR, CMD_MDLTODIR ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_mdltodir, CMD_MDLTODIR, CMD_MDLTODIR ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(MdlToDir   ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_purgeold, CMD_PURGEOLD, CMD_PURGEOLD ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_purgeold, CMD_PURGEOLD, CMD_PURGEOLD ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(PurgeOld   ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_eraseidle, CMD_ERASEIDLE, CMD_ERASEIDLE ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_eraseidle, CMD_ERASEIDLE, CMD_ERASEIDLE ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(EraseIdle  ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_cleanjunk, CMD_CLEANJUNK, CMD_CLEANJUNK ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_cleanjunk, CMD_CLEANJUNK, CMD_CLEANJUNK ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(CleanJunk  ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_outline, CMD_OUTLINE, CMD_OUTLINE ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_outline, CMD_OUTLINE, CMD_OUTLINE ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(Outline    ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_hide, CMD_HIDE, CMD_HIDE ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_copyname, CMD_COPYNAME, CMD_COPYNAME ".Help", cmd_desc, msgfile);
+        HLog("ProCmdDesignate(CopyName   ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_hide, CMD_HIDE, CMD_HIDE ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(Hide       ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_unhide, CMD_UNHIDE, CMD_UNHIDE ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_unhide, CMD_UNHIDE, CMD_UNHIDE ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(Unhide     ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_unhideall, CMD_UNHIDEALL, CMD_UNHIDEALL ".Help", empty_desc, msgfile);
-        status = ProCmdDesignate(cmd_togglehide, CMD_TOGGLEHIDE, CMD_TOGGLEHIDE ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_unhideall, CMD_UNHIDEALL, CMD_UNHIDEALL ".Help", cmd_desc, msgfile);
+        status = ProCmdDesignate(cmd_togglehide, CMD_TOGGLEHIDE, CMD_TOGGLEHIDE ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(ToggleHide ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_hideall, CMD_HIDEALL, CMD_HIDEALL ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_hideall, CMD_HIDEALL, CMD_HIDEALL ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(HideAll    ) -> %d\n", (int)status);
         HLog("ProCmdDesignate(UnhideAll  ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_rename3d, CMD_RENAME3D, CMD_RENAME3D ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_rename3d, CMD_RENAME3D, CMD_RENAME3D ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(Rename3D   ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_colorasm, CMD_COLORASM, CMD_COLORASM ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_colorasm, CMD_COLORASM, CMD_COLORASM ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(ColorAsm   ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_clearcolor, CMD_CLEARCOLOR, CMD_CLEARCOLOR ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_clearcolor, CMD_CLEARCOLOR, CMD_CLEARCOLOR ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(ClearColor ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_openinplace, CMD_OPENINPLACE, CMD_OPENINPLACE ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_openinplace, CMD_OPENINPLACE, CMD_OPENINPLACE ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(OpenInPlace) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_viewnormal, CMD_VIEWNORMAL, CMD_VIEWNORMAL ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_openviewinplace, CMD_OPENVIEWINPLACE, CMD_OPENVIEWINPLACE ".Help", cmd_desc, msgfile);
+        HLog("ProCmdDesignate(OpenViewInPlace) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_open3d, CMD_OPEN3D, CMD_OPEN3D ".Help", cmd_desc, msgfile);
+        HLog("ProCmdDesignate(Open3D     ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_viewnormal, CMD_VIEWNORMAL, CMD_VIEWNORMAL ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(ViewNormal ) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_batchbackup, CMD_BATCHBACKUP, CMD_BATCHBACKUP ".Help", empty_desc, msgfile);
+        status = ProCmdDesignate(cmd_eqcrv, CMD_EQCRV, CMD_EQCRV ".Help", cmd_desc, msgfile);
+        HLog("ProCmdDesignate(EqCurve    ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_batchbackup, CMD_BATCHBACKUP, CMD_BATCHBACKUP ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(BatchBackup) -> %d\n", (int)status);
-        status = ProCmdDesignate(cmd_simprep, CMD_SIMPREP, CMD_SIMPREP ".Help", empty_desc, msgfile);
-        HLog("ProCmdDesignate(SimpRep    ) -> %d\n", (int)status);
         for (i = 0; i < H_SCALE_COUNT; i++)
         {
             sprintf(helpkey, "%s.Help", g_scale_items[i].name);
             status = ProCmdDesignate(g_scale_cmd[i], (char *)g_scale_items[i].name,
-                                     helpkey, empty_desc, msgfile);
+                                     helpkey, cmd_desc, msgfile);
             HLog("ProCmdDesignate(%s) -> %d\n", g_scale_items[i].name, (int)status);
         }
         sprintf(helpkey, "%s.Help", CMD_SCALE_CUSTOM);
         status = ProCmdDesignate(g_scale_custom_cmd, CMD_SCALE_CUSTOM,
-                                 helpkey, empty_desc, msgfile);
+                                 helpkey, cmd_desc, msgfile);
         HLog("ProCmdDesignate(%s) -> %d\n", CMD_SCALE_CUSTOM, (int)status);
     }
 
