@@ -5401,43 +5401,65 @@ static int HOpenViewInPlaceAct(uiCmdCmdId command, uiCmdValue *p_value,
     }
 
     /* 2. 视图朝向矩阵，归一化成纯旋转
-       ★★ 2026-10-23 实测（h_load.log）：
-            viewSolidGet -> 0  solid=0000023606C91458
-            matrixGet    -> -1
-          原因是【选择集给出来的 ProView 不能直接喂 ProViewMatrixGet】——
-          那是"选中项"口径的句柄，不是视图对象本身。正确路线是先拿
-          view_id（ProDrawingViewIdGet），再用 ProDrawingViewInit 换一次
-          正式视图句柄，然后才取矩阵。两条都留着并各自记日志，
-          极端视图（比如图纸视图）若仍取不到，只影响方向，不影响开窗。 */
+       ★★ 2026-10-23 第二次实测（h_load.log）：
+            viewSolidGet -> 0   viewIdGet -> 0   viewInit -> 0
+            matrixGet(init) -> -1    matrixGet(sel) -> -1
+          ⇒ ProViewMatrixGet 取图纸视图这条路根本走不通（选择集句柄、Init 换出来的
+            正式句柄都返回 -1），所以之前"打开 3D 但方向没变"。
+          正确的 API 是 ProDrawingViewTransformGet()：官方示例
+          UgDrawingDimensions.c / TestDrwView.c 用它把「模型里的 3D 点」换算成
+          「图纸上的 2D 点」，可见它左上 3x3 就是【模型 → 图纸】的完整朝向。
+          去掉比例（行归一化）和平移（末行清零）后，正是 ProViewMatrixSet
+          要的那个旋转矩阵。旧的两条 ProViewMatrixGet 保留作兜底。 */
     memset(mtx, 0, sizeof(mtx));
     scale  = 0.0;
-    status = PRO_TK_GENERAL_ERROR;
-    vid    = -1;
-
-    st2 = ProDrawingViewIdGet((ProDrawing)dwg_mdl, view, &vid);
-    HLog("HOpenViewInPlaceAct: viewIdGet -> %d id=%d\n", (int)st2, vid);
-    if (st2 == PRO_TK_NO_ERROR)
+    status = ProDrawingViewTransformGet((ProDrawing)dwg_mdl, view,
+                                        PRO_B_TRUE, mtx);
+    HLog("HOpenViewInPlaceAct: transformGet(view->drawing) -> %d\n", (int)status);
+    if (status == PRO_TK_NO_ERROR)
     {
-        ProView v2 = NULL;
-
-        st2 = ProDrawingViewInit((ProDrawing)dwg_mdl, vid, &v2);
-        HLog("HOpenViewInPlaceAct: viewInit -> %d view=%p\n", (int)st2, (void*)v2);
-        if (st2 == PRO_TK_NO_ERROR && v2 != NULL)
-        {
-            status = ProViewMatrixGet(dwg_mdl, v2, mtx);
-            HLog("HOpenViewInPlaceAct: matrixGet(init) -> %d\n", (int)status);
-        }
+        HLog("HOpenViewInPlaceAct: raw=(%.4f %.4f %.4f | %.4f %.4f %.4f"
+             " | %.4f %.4f %.4f | %.4f %.4f %.4f)\n",
+             mtx[0][0], mtx[0][1], mtx[0][2],
+             mtx[1][0], mtx[1][1], mtx[1][2],
+             mtx[2][0], mtx[2][1], mtx[2][2],
+             mtx[3][0], mtx[3][1], mtx[3][2]);
+        scale = sqrt(mtx[0][0] * mtx[0][0] + mtx[0][1] * mtx[0][1]
+                   + mtx[0][2] * mtx[0][2]);
     }
-    if (status != PRO_TK_NO_ERROR)
+
+    if (status != PRO_TK_NO_ERROR || scale < 1e-9)
     {
+        /* 兜底：老路线（对普通 3D 视图有效，对图纸视图历来 -1） */
         memset(mtx, 0, sizeof(mtx));
-        status = ProViewMatrixGet(dwg_mdl, view, mtx);
-        HLog("HOpenViewInPlaceAct: matrixGet(sel) -> %d\n", (int)status);
+        scale = 0.0;
+        vid   = -1;
+        st2   = ProDrawingViewIdGet((ProDrawing)dwg_mdl, view, &vid);
+        HLog("HOpenViewInPlaceAct: viewIdGet -> %d id=%d\n", (int)st2, vid);
+        if (st2 == PRO_TK_NO_ERROR)
+        {
+            ProView v2 = NULL;
+
+            st2 = ProDrawingViewInit((ProDrawing)dwg_mdl, vid, &v2);
+            HLog("HOpenViewInPlaceAct: viewInit -> %d view=%p\n",
+                 (int)st2, (void*)v2);
+            if (st2 == PRO_TK_NO_ERROR && v2 != NULL)
+            {
+                status = ProViewMatrixGet(dwg_mdl, v2, mtx);
+                HLog("HOpenViewInPlaceAct: matrixGet(init) -> %d\n", (int)status);
+            }
+        }
+        if (status != PRO_TK_NO_ERROR)
+        {
+            memset(mtx, 0, sizeof(mtx));
+            status = ProViewMatrixGet(dwg_mdl, view, mtx);
+            HLog("HOpenViewInPlaceAct: matrixGet(sel) -> %d\n", (int)status);
+        }
+        scale = sqrt(mtx[0][0] * mtx[0][0] + mtx[0][1] * mtx[0][1]
+                   + mtx[0][2] * mtx[0][2]);
     }
 
-    scale = sqrt(mtx[0][0] * mtx[0][0] + mtx[0][1] * mtx[0][1]
-               + mtx[0][2] * mtx[0][2]);
-    HLog("HOpenViewInPlaceAct: matrixGet -> %d scale=%.5f\n",
+    HLog("HOpenViewInPlaceAct: matrix -> %d scale=%.5f\n",
          (int)status, scale);
     if (status != PRO_TK_NO_ERROR || scale < 1e-9)
     {
@@ -5476,6 +5498,21 @@ static int HOpenViewInPlaceAct(uiCmdCmdId command, uiCmdValue *p_value,
     /* 4. 套方向 */
     status = ProViewMatrixSet((ProMdl)solid, NULL, mtx);
     HLog("HOpenViewInPlaceAct: matrixSet -> %d\n", (int)status);
+    {
+        /* 回读一次：Creo 会加自己的缩放/平移，值不会和传进去的一样，
+           但旋转部分应当一致。日志里对一下就知道到底吃没吃进去。 */
+        ProMatrix chk;
+
+        memset(chk, 0, sizeof(chk));
+        if (ProViewMatrixGet((ProMdl)solid, NULL, chk) == PRO_TK_NO_ERROR)
+            HLog("HOpenViewInPlaceAct: applied R=(%.3f %.3f %.3f | %.3f %.3f %.3f"
+                 " | %.3f %.3f %.3f)\n",
+                 chk[0][0], chk[0][1], chk[0][2],
+                 chk[1][0], chk[1][1], chk[1][2],
+                 chk[2][0], chk[2][1], chk[2][2]);
+        else
+            HLog("HOpenViewInPlaceAct: applied matrix readback failed\n");
+    }
     ProWindowRepaint(PRO_VALUE_UNUSED);
     /* 模型已经开出来了，只是方向没套上（镜像视图等） —— 单独给一句提示，
        否则用户会以为整条命令失败了。 */

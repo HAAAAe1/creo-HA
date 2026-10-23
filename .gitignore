@@ -33,3 +33,6 @@ tools/a4_zoom*.png
 开发资料/tools/zoom*.png
 开发资料/h_load.log
 开发资料/eq_curve.txt
+
+# 打包时临时产物
+开发资料/H.dll

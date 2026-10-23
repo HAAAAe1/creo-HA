@@ -20,6 +20,7 @@
 - **修好按钮没有文字**：`ProCmdDesignate` 第 4 个参数传了空串，被当成消息键去查，一处查不到就整条登记作废（返回 -28）。补 `H_CmdDesc` 键后标签恢复。
 - **基准组**新增 Creo 原生 `修剪` / `投影` / `扫描`（命令名从 trail 反查：`ProCmdFtTrim` / `ProCmdFtProject` / `ProCmdFtLoft`）。
 - **工程图**新增 `原位打开`（选一个视图，按该视图方向把 3D 单独开窗）、`打开 3D`。
+  方向用 `ProDrawingViewTransformGet` 取（`ProViewMatrixGet` 对图纸视图恒返回 -1），开窗后视角与图纸视图一致。
 - **模型信息**新增 `复制名称`：装配复制装配名、零件复制零件名、图纸复制图纸名，不用先选中。
 - **方程曲线**对话框常驻提示：方程曲线是开放样条，要修剪先投影。
 - **发布包整理**：源码、makefile、build.bat、LICENSE、README 全部收进 `开发资料\`，根目录只剩装插件要用的东西。
