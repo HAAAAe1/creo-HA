@@ -13,6 +13,8 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if not os.path.exists(os.path.join(ROOT, "H.dll")):        # 脚本在 开发资料\tools 下
+    ROOT = os.path.dirname(ROOT)
 SRC = os.path.join(ROOT, "功能说明.txt")
 OUT = os.path.join(ROOT, "功能说明_A4.png")
 

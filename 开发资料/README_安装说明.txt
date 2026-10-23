@@ -45,12 +45,20 @@
   text\chinese_cn\ribbonui.txt 中文功能区【页签/组名】（HA / 注释 / 会话 / 球标 / 功能 / 3D / 绘图比例）
   text\usascii\ribbonui.txt    英文功能区【页签/组名】
   symbols\123.sym              圆形球标符号（数字为可变文本）
-  src\h_main.c                  插件源码
-  makefile / build.bat          重新编译用
-  setup.bat                     一键把 H.dat 里的路径改成当前文件夹
+  setup.bat                     把 H.dat 里的路径改成当前文件夹（换盘才用）
   templates（技术要求 子目录）   技术要求注解模板（一行 = 注解一行）
-  README.md                    项目主页说明（含实现细节与坑）
+  安装说明_超简单版.txt          三句话版安装说明
+  安装步骤.png                  三步安装图
+  功能说明.txt / 功能说明_A4.png  全部功能清单（文字 / 一页 A4 图）
+
+  以下都在 开发资料\ 里，装插件用不到：
+  src\h_main.c                  插件源码
+  makefile / build.bat          重新编译用（编完自动把 H.dll 同步到 H\）
+  unlock.bat                    重新编译后要跑的解锁脚本
+  LICENSE                       MIT 许可
+  README.md                     项目主页说明（含实现细节与坑）
   README_安装说明.txt            本文件
+  tools\                        图标生成、功能区样式、打包、出图等脚本
 
 --------------------------------------------------------------------
 【三、安装步骤】

@@ -256,24 +256,31 @@ Creo 上运行（"Creo Parametric build newer than Creo TOOLKIT build: always su
 ## 文件结构
 
 ```
-H/
+H/                                   ← 别人拿到手看到的就是这一层
 ├── H.dll                            插件主程序
 ├── H.dat                            TOOLKIT 注册文件
-├── setup.bat                        一键把 H.dat 路径改成当前文件夹
-├── unlock.bat                       分发前解锁（见上文）
-├── build.bat / makefile             重新编译用
-├── src/
-│   └── h_main.c                     插件源码
+├── setup.bat                        把 H.dat 路径改成当前文件夹（换盘才用）
+├── 安装说明_超简单版.txt             三步装好
+├── 安装步骤.png                      三步图（给不看字的人）
+├── 功能说明.txt / 功能说明_A4.png     全部功能清单
 ├── text/
 │   ├── ribbon/toolkitribbonui.rbn   功能区定义（自动挂「HA」选项卡）
 │   ├── chinese_cn/h_msg.txt         中文界面文字（命令标签 Help）
 │   ├── usascii/h_msg.txt            英文界面文字
 │   ├── chinese_cn/ribbonui.txt      中文功能区页签/组名
-│   └── usascii/ribbonui.txt         英文功能区页签/组名
+│   ├── usascii/ribbonui.txt         英文功能区页签/组名
+│   └── resource/h_*.png             按钮图标（20px + 32px）
 ├── templates/
 │   └── 技术要求/*.txt                技术要求注解模板（一行 = 注解一行）
-└── symbols/
-    └── 123.sym                      圆形球标符号（数字为可变文本，Creo 6 格式）
+├── symbols/
+│   └── 123.sym                      圆形球标符号（数字为可变文本，Creo 6 格式）
+└── 开发资料/                         装插件用不到，改代码才用
+    ├── src/h_main.c                 插件源码
+    ├── makefile / build.bat         重新编译（编完自动把 H.dll 同步到 H\）
+    ├── unlock.bat                   重新编译后解锁
+    ├── LICENSE                      MIT
+    ├── README.md / README_安装说明.txt
+    └── tools/                       图标、功能区样式、打包、出图脚本
 ```
 
 ---

@@ -23,3 +23,13 @@ tools/zoom_alt.png
 tools/tmp_*.png
 tools/a4_preview.png
 tools/a4_zoom*.png
+
+# 工具输出（开发资料下）
+开发资料/tools/__pycache__/
+开发资料/tools/*_preview.png
+开发资料/tools/a4_zoom*.png
+开发资料/tools/crop_right.png
+开发资料/tools/view_cands.png
+开发资料/tools/zoom*.png
+开发资料/h_load.log
+开发资料/eq_curve.txt

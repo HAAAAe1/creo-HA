@@ -36,6 +36,12 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem makefile 把 H.dll 生成在本目录；安装用的是上一级目录（D:\H）那份，这里同步过去
+copy /y "%~dp0H.dll" "%~dp0..\H.dll" >nul
+if errorlevel 1 (
+  echo [WARN] built, but could not copy H.dll to the parent folder.
+)
+
 echo.
 echo [OK] H.dll built.
 pause
