@@ -815,3 +815,34 @@ OPEN3D_OK
 #
 H_CmdDesc
 H plug-in command
+#
+H_StdLib
+Standard Parts Library
+#
+H_StdLib.Help
+Browse standard parts and insert a family instance into the current assembly. The component is placed unconstrained at the origin; use Component Placement to constrain it.
+#
+H_GrpStd
+Standard Parts
+#
+TD_STD_NODIR
+Standard parts library folder not found. Put it at <plugin dir>\stdlib, or set the H_STDLIB environment variable to the library folder.
+#
+TD_STD_EMPTY
+The library folder has no category subfolder.
+#
+TD_STD_NOLOAD
+Failed to load the part file. See h_load.log.
+#
+TD_STD_NOFAM
+No family table instance available for this part.
+#
+TD_STD_NOINST
+Could not build the instance model for this spec. See h_load.log.
+#
+TD_STD_FAIL
+Insert failed. See h_load.log.
+#
+TD_STD_OK
+Inserted into the assembly: unconstrained, at the origin. Use Component Placement to constrain it.
+#

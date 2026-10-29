@@ -1058,3 +1058,44 @@ OPEN3D_OK
 H_CmdDesc
 H plug-in command
 H 插件命令
+#
+H_StdLib
+Standard Parts Library
+标准件库
+#
+H_StdLib.Help
+Browse standard parts and insert a family instance into the current assembly. The component is placed unconstrained at the origin; use Component Placement to constrain it.
+浏览标准件，选一个规格插入当前装配。模型以未约束状态出现在原点，再用「元件放置」约束即可。
+#
+H_GrpStd
+Standard Parts
+标准件
+#
+TD_STD_NODIR
+Standard parts library folder not found. Put it at <plugin dir>\stdlib, or set the H_STDLIB environment variable to the library folder.
+找不到标准件库目录。请把它放在 <插件目录>\stdlib，或设置环境变量 H_STDLIB 指向库目录。
+#
+TD_STD_EMPTY
+The library folder has no category subfolder.
+标准件库里没有类别子文件夹。
+#
+TD_STD_NOLOAD
+Failed to load the part file. See h_load.log.
+零件文件加载失败，详见 h_load.log。
+#
+TD_STD_NOFAM
+No family table instance available for this part.
+这个零件没有可插入的族表实例。
+#
+TD_STD_NOINST
+Could not build the instance model for this spec. See h_load.log.
+这个规格的实例模型没能生成，详见 h_load.log。
+#
+TD_STD_FAIL
+Insert failed. See h_load.log.
+插入失败，详见 h_load.log。
+#
+TD_STD_OK
+Inserted into the assembly: unconstrained, at the origin. Use Component Placement to constrain it.
+已插入装配：未约束，位于原点。用「元件放置」约束即可。
+#

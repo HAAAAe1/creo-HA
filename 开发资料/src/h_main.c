@@ -59,6 +59,10 @@
 #include <ProDtmCrv.h>
 #include <ProCsys.h>
 #include <ProCsysdata.h>
+#include <ProFamtable.h>
+#include <ProFaminstance.h>
+#include <ProParameter.h>
+#include <ProParamval.h>
 #include <ProUIMessage.h>
 
 /* 注：这里曾经有一大段直接调 Win32 的「Esc 监听 + 光标离开图形区监听」代码，
@@ -77,6 +81,7 @@
 #include <ProPDF.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <wincodec.h>        /* 标准件预览：PNG 解码（GDI+ 头文件只支持 C++，WIC 才认 C） */
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -150,6 +155,7 @@
 #define CMD_OPEN3D          "H_Open3D"
 #define CMD_BATCHBACKUP  "H_BatchBackup"
 #define CMD_EQCRV        "H_EqCurve"
+#define CMD_STDLIB       "H_StdLib"      /* 标准件库（本机自用，不进发布包） */
 
 #define CMD_OPENWORKDIR "H_OpenWorkDir"
 #define CMD_SETWORKDIR  "H_SetWorkDir"
@@ -6840,18 +6846,24 @@ static const HEqTpl g_eqtpl[] =
     /* 7 ---------------------------------------------------------------- */
     {
         L"变螺距弹簧",
-        L"柱坐标。p1/p2=起始/终止螺距，螺距沿高度线性变化（两端密、中间疏之类）。\n"
+        L"柱坐标。a/b=起始/终止螺距，螺距沿高度线性变化（两端密、中间疏之类）。\n"
         L"R=中径半径，n=圈数。",
         1, 4,
         {
-            { L"R",  L"中径半径 R (mm)",      20.0 },
-            { L"n",  L"圈数 n (圈)",           8.0 },
-            { L"p1", L"起始螺距 p1 (mm)",       3.0 },
-            { L"p2", L"终止螺距 p2 (mm)",      10.0 },
+            { L"R", L"中径半径 R (mm)",      20.0 },
+            { L"n", L"圈数 n (圈)",           8.0 },
+            { L"a", L"起始螺距 a (mm)",       3.0 },
+            { L"b", L"终止螺距 b (mm)",      10.0 },
         },
+        /* 2026-10-28 实测：被 Creo 12 拒的是变量名 p1/p2，不是语法。
+           同一次跑的 11 条语法探针里，只有把 p1/p2 换成 a/b 的那条（P10）
+           拿到 create 0，其余全 -1 —— 括号后接乘、嵌套括号、减号、t*t 都没问题。
+           所以这里就用跟「阿基米德螺线」「椭圆」同一套短名写法（a/b），
+           方程也逐字取自 P10，别再自创长名。
+           数学：n*(a*t + (b-a)*t²/2) 就是螺距从 a 线性变到 b 的螺旋高度。 */
         L"theta = t*360*n\n"
         L"r = R\n"
-        L"z = n*(p1*t+(p2-p1)*t*t/2)"
+        L"z = n*(a*t+(b-a)*t*t/2)"
     },
     /* 8 ---------------------------------------------------------------- */
     {
@@ -7919,6 +7931,36 @@ static int HEqFeatureFailed(ProSolid solid, int feat_id)
     return hit;
 }
 
+/* 把送进 Creo 的方程原文按行打进日志。
+   2026-10-28 加：create 失败时 Creo 只回 -1、errs.error_number=0，
+   屏幕上那句「具体出错元素见 h_load.log」以前在日志里根本没有任何东西可看。 */
+static void HEqDumpEq(const wchar_t *tag, const wchar_t *eq)
+{
+    wchar_t line[512];
+    int     len, i, k = 0, n = 0;
+
+    if (eq == NULL)
+        return;
+    len = (int)wcslen(eq);
+    HLog("HEqDumpEq[%ls]: begin len=%d\n", tag, len);
+    for (i = 0; i <= len; i++)
+    {
+        if (i == len || eq[i] == L'\n')
+        {
+            line[k] = L'\0';
+            HLog("HEqDumpEq:  | %ls\n", line);
+            k = 0;
+            if (++n > 200)
+                break;
+        }
+        else if (k < 500)
+        {
+            line[k++] = eq[i];
+        }
+    }
+    HLog("HEqDumpEq: end lines=%d\n", n);
+}
+
 /* 建一条方程曲线（探针/自检共用）。p_feat 回传特征，后续判失败/删除用。 */
 static ProError HEqCreateCurveEx(ProSelection model_sel, ProModelitem *p_csys,
                                  int csys_type, const wchar_t *name,
@@ -7972,6 +8014,24 @@ static ProError HEqCreateCurveEx(ProSelection model_sel, ProModelitem *p_csys,
             *p_feat = feat;
         HLog("HEqCreateCurveEx[%ls]: create -> %d (errs=%d) feat=%d\n",
              name, (int)st, errs.error_number, feat.id);
+        if (st != PRO_TK_NO_ERROR)
+        {
+            int ei;
+
+            HEqDumpEq(name, eq);
+            if (errs.error_number > 0 && errs.error_list != NULL)
+            {
+                for (ei = 0; ei < errs.error_number; ei++)
+                    HLog("HEqCreateCurveEx: err[%d] elem=%d type=%d code=%d\n",
+                         ei, errs.error_list[ei].err_item_id,
+                         (int)errs.error_list[ei].err_item_type,
+                         (int)errs.error_list[ei].error);
+            }
+            else
+            {
+                HLog("HEqCreateCurveEx: Creo 没给任何元素级错误（errs=0）\n");
+            }
+        }
         ProArrayFree((ProArray *)&opts);
     }
     else
@@ -8120,6 +8180,96 @@ static void HEqSelfTest(ProSelection model_sel, ProModelitem *p_csys,
             HEqDeleteFeat(solid, feat.id);
     }
     HLog("HEqSelfTest: end\n");
+}
+
+/* ---------------------------------------------------------------
+   方程被 Creo 直接拒绝（create -> -1、errs=0）时的语法探针
+   2026-10-28 加。起因：「变螺距弹簧」的方程
+       z = n*(p1*t+(p2-p1)*t*t/2)
+   在 Creo 12 上连特征都建不出来，而同一模型里「圆柱螺旋线」的
+       z = z0+p*n*t
+   能建。Creo 不告诉你坏在哪个字符，所以用同一份参数头、只换 z 行的写法
+   逐个试，把「哪一类构造过不去」直接钉在日志里。
+   每建成一条立刻删掉，不留垃圾。P00/P07 是已知能过的对照，
+   如果连它们都过不去，说明问题不在方程而在环境。
+   --------------------------------------------------------------- */
+#define HEQ_PROBE_HDR \
+    L"R = 20\nn = 8\np1 = 3\np2 = 10\n\ntheta = t*360*n\nr = R\n"
+
+static const HEqTest g_eqprobes[] =
+{
+    /* 对照组：tpl5 圆柱螺旋线的写法，实测能建 */
+    { L"P00-control-helix", 1,
+      L"R = 20\nn = 8\np = 6\nz0 = 0\n\ntheta = t*360*n\nr = R\nz = z0+p*n*t" },
+
+    /* 原式 */
+    { L"P01-orig", 1,
+      HEQ_PROBE_HDR L"z = n*(p1*t+(p2-p1)*t*t/2)" },
+
+    /* 括起来的东西直接乘：h*(...) 在凸轮模板里是能过的 */
+    { L"P02-paren-times", 1,
+      HEQ_PROBE_HDR L"z = n*(1-cos(180*t))/2" },
+
+    /* 变量减变量，无括号 */
+    { L"P03-var-minus", 1,
+      HEQ_PROBE_HDR L"z = p2-p1" },
+
+    /* 括号里只有减号（无外层） */
+    { L"P04-paren-minus", 1,
+      HEQ_PROBE_HDR L"z = p1+(p2-p1)*t" },
+
+    /* 单层括号，内部无嵌套 */
+    { L"P05-flat-paren", 1,
+      HEQ_PROBE_HDR L"z = n*(p1*t+p2*t*t/2)" },
+
+    /* 单层括号，内部只有一项 */
+    { L"P06-simple-paren", 1,
+      HEQ_PROBE_HDR L"z = n*(p1*t)" },
+
+    /* t 自乘 */
+    { L"P07-t-square", 1,
+      HEQ_PROBE_HDR L"z = n*p1*t*t" },
+
+    /* 拆成两行：先算螺距差，再展开成无括号式（这就是新模板的写法） */
+    { L"P08-flat-two-lines", 1,
+      HEQ_PROBE_HDR L"dp = p2-p1\nz = n*p1*t+n*dp*t*t/2" },
+
+    /* 全展开成一行 */
+    { L"P09-flat-one-line", 1,
+      HEQ_PROBE_HDR L"z = n*p1*t+n*p2*t*t/2-n*p1*t*t/2" },
+
+    /* 换名字：排除 p1/p2 这两个变量名本身的问题 */
+    { L"P10-rename-ab", 1,
+      L"R = 20\nn = 8\na = 3\nb = 10\n\ntheta = t*360*n\nr = R\n"
+      L"z = n*(a*t+(b-a)*t*t/2)" },
+};
+
+static void HEqProbeBisect(ProSelection model_sel, ProModelitem *p_csys,
+                           ProSolid solid)
+{
+    ProFeature feat;
+    ProError   st;
+    int        i, n = (int)(sizeof(g_eqprobes) / sizeof(g_eqprobes[0]));
+
+    if (model_sel == NULL || p_csys == NULL)
+        return;
+
+    HLog("HEqProbeBisect: start (%d cases)\n", n);
+    for (i = 0; i < n; i++)
+    {
+        int failed = -1;
+
+        memset(&feat, 0, sizeof(feat));
+        st = HEqCreateCurveEx(model_sel, p_csys, g_eqprobes[i].ctype,
+                              g_eqprobes[i].tag, g_eqprobes[i].eq, &feat);
+        if (st == PRO_TK_NO_ERROR)
+            failed = HEqFeatureFailed(solid, feat.id);
+        HLog("HEqProbeBisect: [%ls] create=%d failed=%d\n",
+             g_eqprobes[i].tag, (int)st, failed);
+        if (st == PRO_TK_NO_ERROR && feat.id > 0)
+            HEqDeleteFeat(solid, feat.id);
+    }
+    HLog("HEqProbeBisect: end\n");
 }
 
 /* 建特征失败（连特征都没建出来）时的单发探针 */
@@ -8388,6 +8538,9 @@ static int HEqCurveAct(uiCmdCmdId command, uiCmdValue *p_value,
         }
         if (nok == 0)
         {
+            /* 一条都没建成：跑语法探针，把坏的写法钉进日志 */
+            if (nbad > 0)
+                HEqProbeBisect(model_sel, &csys_item, (ProSolid)mdl);
             ProReferenceFree(ref);
             ProSelectionFree(&model_sel);
             HMsg("TD_EQ_FAIL");
@@ -8401,6 +8554,1827 @@ static int HEqCurveAct(uiCmdCmdId command, uiCmdValue *p_value,
 
     ProWindowRepaint(PRO_VALUE_UNUSED);
     HMsg("TD_EQ_OK");
+    return 0;
+}
+
+/*==============================================================*\
+  9. 标准件库（2026-10-28 新增）
+
+  做什么：
+      把 <插件目录>\stdlib 下的族表零件做成一个能点的库 ——
+      左列类别 → 中列零件 → 右列规格 → 插进当前装配。
+
+  库从哪来：
+      HelloCreo V1.80 的 stdlib（第三方商用零件，只本机自用）。
+      .gitignore 已排除 stdlib/、pack.py 白名单也不含它 ——
+      **不能进公开仓库，也不能进 release 包**。
+
+  目录约定（跟 HelloCreo 一样，随时可以把自己的零件丢进去）：
+      stdlib\<类别>\index.idx        一行一个零件名，不含版本号
+      stdlib\<类别>\<零件>.prt.1     族表基件（.asm 也行）
+
+  规格列不读它的 .idx，而是现场问 Creo 要族表实例：
+      ProFamtableInit + ProFamtableInstanceVisit
+  第三方维护的 idx 可能过期，族表是唯一的真相。
+
+  插入链路（官方 TestCavityLayout.c 的写法）：
+      ProFamtableInit(基件) → ProFaminstanceInit(实例名)
+      → ProFaminstanceRetrieve → ProAsmcompAssemble(当前装配, 实例, 单位阵)
+  注意 ProFaminstanceMdlGet 只查【已在会话里】的实例，取不到要先用
+  ProFaminstanceRetrieve 把它从磁盘生成出来。
+\*==============================================================*/
+#define HSTD_SUBDIR   L"stdlib"
+#define HSTD_MAX_CAT  40
+#define HSTD_MAX_PART 300
+#define HSTD_MAX_INST 1500
+#define HSTD_NAME     96
+
+#define HSD_CAT   4101
+#define HSD_PART  4102
+#define HSD_INST  4103
+#define HSD_INFO  4104
+#define HSD_OK    4105
+#define HSD_CAN   4106
+#define HSD_L1    4107
+#define HSD_L2    4108
+#define HSD_L3    4109
+#define HSD_TIP   4110
+#define HSD_PREV  4111
+#define HSD_PNOTE 4112
+#define HSD_S(d, v) MulDiv((v), ((d)->sc > 0 ? (d)->sc : 100), 100)
+
+typedef struct
+{
+    wchar_t name[HSTD_NAME];        /* 不含扩展名 */
+    wchar_t path[PRO_PATH_SIZE];    /* 类别=目录；零件=全路径（不带扩展名） */
+} HStdEnt;
+
+typedef struct
+{
+    wchar_t  root[PRO_PATH_SIZE];
+    HStdEnt  cat[HSTD_MAX_CAT];     int ncat;
+    HStdEnt  part[HSTD_MAX_PART];   int npart;
+    wchar_t  inst[HSTD_MAX_INST][HSTD_NAME]; int ninst;
+    int      nofam;                 /* 1 = 这个零件没有族表，插基件 */
+    int      ftbad;                 /* 1 = 有族表但读不出来（不是"没有"） */
+    wchar_t  verinfo[HSTD_NAME];    /* ftbad 时的线索：目录里那个新版文件 */
+    int      cat_sel, part_sel, inst_sel;
+    wchar_t  loaded[HSTD_NAME];     /* 已经问过族表的零件名，做缓存 */
+
+    HWND     hwnd, hcat, hpart, hinst, hinfo, htip, hok, hcan, hl1, hl2, hl3;
+    HWND     hprev;                 /* 预览图（stdlb 里那对同名 png） */
+    HWND     hnote;                 /* 预览框下方的小字：无图/加载失败时提示 */
+    HBITMAP  prevbm;                /* 当前预览位图，换图/关窗要删 */
+    HFONT    font;
+    int      sc, done, ok, inserted;
+    int      req_insert;            /* 用户点了插入：关窗后由 HStdLibAct 执行 */
+} HStdDlg;
+
+/* 一次只开一个库窗口：这个结构体带 1500 个实例名，放栈上会爆 */
+static HStdDlg g_hstd;
+
+/* ---- 族表实例名单缓存 ----------------------------------------------------
+   实测（Creo 12 + 这套 Creo 7 写的库）：同一个模型第二次 ProFamtableInit
+   会拿到空表 —— 日志里 famtableCheck 第一次 0（有表）、第二次 -4（找不到），
+   visit 从 85 条变成 0 条。表现就是「点一次零件，规格列表就只剩基件」。
+
+   所以每个零件只问一次族表，结果留在这里；之后无论怎么切换都走缓存。
+   顺带把 ProFamtableErase 也去掉了 —— 它很可能就是让第二次 Init 拿到空表
+   的原因（句柄释放后 Creo 侧的族表缓存没跟着复位）。                  */
+#define HSTD_CACHE_MAX 64
+#define HSTD_COL_MAX   24       /* 族表最多几个驱动项（实测 7~11） */
+#define HSTD_NOVAL     (-1.0e300)
+
+typedef struct
+{
+    wchar_t  key[PRO_PATH_SIZE];
+    wchar_t *names;                 /* n 个 HSTD_NAME 宽的连续块 */
+    int      n;
+    int      nofam;
+
+    /* 族表列（驱动项）+ 每个实例的整行值。
+       ★ 只有「第一次 ProFamtableInit」那次读得到，第二次起 Creo 12 返回空表，
+         所以必须在那一刻抄下来，之后一律用缓存，不再碰族表接口。 */
+    int      ncol;
+    int      colid[HSTD_COL_MAX];
+    int      coltype[HSTD_COL_MAX];
+    double  *vals;                  /* n × HSTD_COL_MAX，HSTD_NOVAL = 取不到 */
+} HStdCache;
+
+static HStdCache g_hstd_cache[HSTD_CACHE_MAX];
+static int       g_hstd_ncache;
+
+/* 当前正在浏览的零件路径（插入时用它找回缓存） */
+static wchar_t   g_hstd_curpath[PRO_PATH_SIZE];
+
+/* 读族表那一趟用的暂存区 */
+static int             g_ft_ncol;
+static ProFamtableItem g_ft_item[HSTD_COL_MAX];
+static int             g_ft_colid[HSTD_COL_MAX];
+static int             g_ft_coltype[HSTD_COL_MAX];
+static wchar_t         g_ft_colname[HSTD_COL_MAX][PRO_NAME_SIZE];
+static double          g_ft_vals[HSTD_MAX_INST][HSTD_COL_MAX];
+
+static int HStdDirExistsW(const wchar_t *p)
+{
+    DWORD a = GetFileAttributesW(p);
+
+    return (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
+}
+
+/* 拼 <dir>\<base>（不带扩展名，retrieve 用） */
+static int HStdJoinW(wchar_t *out, int cap, const wchar_t *dir, const wchar_t *base)
+{
+    size_t dl  = wcslen(dir);
+    int    sep = (dl > 0 && (dir[dl - 1] == L'\\' || dir[dl - 1] == L'/')) ? 0 : 1;
+
+    if ((int)(dl + (size_t)sep + wcslen(base) + 1) > cap)
+        return -1;
+    swprintf(out, (size_t)cap, L"%ls%ls%ls", dir, sep ? L"\\" : L"", base);
+    return 0;
+}
+
+/* 去掉末尾的 .prt / .asm（大小写都认，index.idx 里混着写） */
+static void HStdStripExt(wchar_t *s)
+{
+    size_t n = wcslen(s);
+
+    while (n > 0 && (s[n - 1] == L' ' || s[n - 1] == L'\t'))
+        s[--n] = L'\0';
+    if (n > 4 && _wcsicmp(s + n - 4, L".prt") == 0)
+        s[n - 4] = L'\0';
+    else if (n > 4 && _wcsicmp(s + n - 4, L".asm") == 0)
+        s[n - 4] = L'\0';
+}
+
+/* 文件其实是 name.prt.1，直接查 name.prt 是查不到的，必须用通配符 */
+static int HStdMdlExistsW(const wchar_t *dir, const wchar_t *base)
+{
+    static const wchar_t *exts[] = { L".prt*", L".asm*" };
+    wchar_t        pat[PRO_PATH_SIZE];
+    WIN32_FIND_DATAW fd;
+    HANDLE         h;
+    int            i;
+
+    for (i = 0; i < 2; i++)
+    {
+        swprintf_s(pat, PRO_PATH_SIZE, L"%ls\\%ls%ls", dir, base, exts[i]);
+        h = FindFirstFileW(pat, &fd);
+        if (h != INVALID_HANDLE_VALUE)
+        {
+            FindClose(h);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* 扫目录里 <base>.prt.N / .asm.N，返回最大版本号 N，并把文件名写进 out。
+   ★ 为什么需要它：Creo 永远优先加载版本号最大的文件。目录里只要躺着一个
+     被保存过的 .prt.2，Creo 就再也看不到那个 .prt.1 —— 而 .prt.2 是残的
+     时候，族表就读不出来（famtableCheck -4），列表表现为空白。 */
+static int HStdNewestVerW(const wchar_t *path_noext, wchar_t *out, int cap)
+{
+    static const wchar_t *exts[] = { L".prt.*", L".asm.*" };
+    WIN32_FIND_DATAW fd;
+    HANDLE           h;
+    wchar_t          pat[PRO_PATH_SIZE];
+    int              i, best = 0;
+
+    if (out != NULL && cap > 0)
+        out[0] = L'\0';
+
+    for (i = 0; i < 2; i++)
+    {
+        swprintf_s(pat, PRO_PATH_SIZE, L"%ls%ls", path_noext, exts[i]);
+        h = FindFirstFileW(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE)
+            continue;
+        do
+        {
+            const wchar_t *dot = wcsrchr(fd.cFileName, L'.');
+            int            v   = (dot != NULL) ? _wtoi(dot + 1) : 0;
+
+            if (v > best)
+            {
+                best = v;
+                if (out != NULL && cap > 0)
+                    swprintf_s(out, (size_t)cap, L"%ls (%lu KB)", fd.cFileName,
+                               (unsigned long)(fd.nFileSizeLow / 1024u));
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return best;
+}
+
+/* 库根目录：① 环境变量 H_STDLIB ② <插件目录>\stdlib ③ HelloCreo 原目录 */
+static int HStdRootW(wchar_t *out, int cap)
+{
+    wchar_t env[PRO_PATH_SIZE];
+    ProPath base;
+    DWORD   n;
+
+    out[0] = L'\0';
+
+    n = GetEnvironmentVariableW(L"H_STDLIB", env, PRO_PATH_SIZE);
+    if (n > 0 && n < PRO_PATH_SIZE && HStdDirExistsW(env))
+    {
+        wcsncpy_s(out, (size_t)cap, env, _TRUNCATE);
+        HLogW("HStdRootW: env -> ", out);
+        return 1;
+    }
+
+    HPluginDirW(base);
+    if (base[0] != L'\0')
+    {
+        swprintf_s(out, (size_t)cap, L"%ls\\%ls", base, HSTD_SUBDIR);
+        if (HStdDirExistsW(out))
+        {
+            HLogW("HStdRootW: plugin -> ", out);
+            return 1;
+        }
+    }
+
+    if (HStdDirExistsW(L"D:\\HelloCreoV180\\HelloCreo\\stdlib"))
+    {
+        wcsncpy_s(out, (size_t)cap, L"D:\\HelloCreoV180\\HelloCreo\\stdlib", _TRUNCATE);
+        HLogW("HStdRootW: hellocreo -> ", out);
+        return 1;
+    }
+
+    out[0] = L'\0';
+    HLog("HStdRootW: not found\n");
+    return 0;
+}
+
+static int HStdScanCats(HStdDlg *d)
+{
+    wchar_t        pat[PRO_PATH_SIZE];
+    WIN32_FIND_DATAW fd;
+    HANDLE         h;
+
+    d->ncat = 0;
+    swprintf_s(pat, PRO_PATH_SIZE, L"%ls\\*", d->root);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+    {
+        HLogW("HStdScanCats: empty dir ", d->root);
+        return 0;
+    }
+    do
+    {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            continue;
+        if (fd.cFileName[0] == L'.')
+            continue;
+        if (d->ncat >= HSTD_MAX_CAT)
+            break;
+        wcsncpy_s(d->cat[d->ncat].name, HSTD_NAME, fd.cFileName, _TRUNCATE);
+        HStdJoinW(d->cat[d->ncat].path, PRO_PATH_SIZE, d->root, fd.cFileName);
+        d->ncat++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+
+    HLog("HStdScanCats: %d categories\n", d->ncat);
+    return d->ncat;
+}
+
+/* 读 <类别>\index.idx；没有就退化成扫目录里的 *.prt.* / *.asm.* */
+static int HStdScanParts(HStdDlg *d)
+{
+    static ProLine lines[HSTD_MAX_PART + 20];
+    wchar_t idx[PRO_PATH_SIZE];
+    int     n, i;
+
+    d->npart    = 0;
+    d->part_sel = -1;
+    d->inst_sel = -1;
+    d->ninst    = 0;
+    d->nofam    = 0;
+    d->loaded[0] = L'\0';
+
+    if (d->cat_sel < 0 || d->cat_sel >= d->ncat)
+        return 0;
+
+    if (HPathJoinW(idx, PRO_PATH_SIZE, d->cat[d->cat_sel].path,
+                   L"index", L".idx") == 0 && HFileExistsW(idx))
+    {
+        n = HReadTplLinesW(idx, lines, HSTD_MAX_PART + 20);
+        for (i = 0; i < n; i++)
+        {
+            wchar_t nm[HSTD_NAME];
+
+            if (lines[i][0] == L'\0' || lines[i][0] == L' ')
+                continue;
+            wcsncpy_s(nm, HSTD_NAME, lines[i], _TRUNCATE);
+            HStdStripExt(nm);
+            if (nm[0] == L'\0')
+                continue;
+            if (!HStdMdlExistsW(d->cat[d->cat_sel].path, nm))
+            {
+                HLogW("HStdScanParts: missing ", nm);
+                continue;
+            }
+            if (d->npart >= HSTD_MAX_PART)
+                break;
+            wcscpy_s(d->part[d->npart].name, HSTD_NAME, nm);
+            HStdJoinW(d->part[d->npart].path, PRO_PATH_SIZE,
+                      d->cat[d->cat_sel].path, nm);
+            d->npart++;
+        }
+    }
+
+    if (d->npart == 0)                     /* 没有 index.idx，直接扫 */
+    {
+        wchar_t          pat[PRO_PATH_SIZE];
+        WIN32_FIND_DATAW fd;
+        HANDLE           h;
+
+        swprintf_s(pat, PRO_PATH_SIZE, L"%ls\\*.prt*", d->cat[d->cat_sel].path);
+        h = FindFirstFileW(pat, &fd);
+        if (h != INVALID_HANDLE_VALUE)
+        {
+            do
+            {
+                wchar_t nm[HSTD_NAME];
+                wchar_t *dot;
+
+                wcsncpy_s(nm, HSTD_NAME, fd.cFileName, _TRUNCATE);
+                dot = wcsrchr(nm, L'.');           /* 去掉版本号 .1 */
+                if (dot != NULL && dot != nm)
+                    *dot = L'\0';
+                HStdStripExt(nm);                  /* 去掉 .prt */
+                if (nm[0] == L'\0' || d->npart >= HSTD_MAX_PART)
+                    continue;
+                wcscpy_s(d->part[d->npart].name, HSTD_NAME, nm);
+                HStdJoinW(d->part[d->npart].path, PRO_PATH_SIZE,
+                          d->cat[d->cat_sel].path, nm);
+                d->npart++;
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+
+    if (d->npart > 0)
+        d->part_sel = 0;
+    HLog("HStdScanParts: %d parts in cat %d\n", d->npart, d->cat_sel);
+    return d->npart;
+}
+
+/* 加载基件：先在会话里找，再按全路径 retrieve，最后切工作目录按名字取
+   （ProMdlnameRetrieve 只在当前工作目录里找，这是官方文档明写的） */
+static ProError HStdLoadMdl(const wchar_t *path_noext, ProMdl *out)
+{
+    ProMdl      m = NULL;
+    ProMdlName  full;
+    ProName     base;
+    ProPath     old, dir;
+    const wchar_t *b;
+    wchar_t    *slash;
+    ProError    st;
+
+    *out = NULL;
+    b = wcsrchr(path_noext, L'\\');
+    b = (b != NULL) ? b + 1 : path_noext;
+    wcsncpy_s(base, PRO_NAME_SIZE, b, _TRUNCATE);
+    wcsncpy_s(full, PRO_MDLNAME_SIZE, path_noext, _TRUNCATE);
+
+    /* 1) 全路径 retrieve（不带扩展名）—— 必须放第一位。
+       ★★ 2026-10-28 实测教训：原来把 ProMdlnameInit 放在最前面当"已在会话里"，
+          它会返回 NO_ERROR + 非空句柄，但那个句柄上的族表是空的 ——
+          h_load.log 里凡是走这条分支的零件全部 `visit -> 0, 0 instances`
+          （04-垫片、05-螺母），而走 pathRetrieve 的全对（85 / 104 / 173 / 19 / 145）。
+          同一个 05-螺母 换条路径就能拿到 19 个实例，说明零件本身没问题，
+          是句柄不对。所以先按全路径 retrieve，再考虑会话里的。 */
+    st = ProMdlnameRetrieve(full, PRO_MDLFILE_PART, &m);
+    if (st != PRO_TK_NO_ERROR)
+        st = ProMdlnameRetrieve(full, PRO_MDLFILE_ASSEMBLY, &m);
+    HLog("HStdLoadMdl: pathRetrieve -> %d\n", (int)st);
+    if (st == PRO_TK_NO_ERROR && m != NULL)
+    {
+        *out = m;
+        return PRO_TK_NO_ERROR;
+    }
+
+    /* 2) 已经在会话里（浏览时加载过） */
+    st = ProMdlnameInit(base, PRO_MDL_PART, &m);
+    if (st != PRO_TK_NO_ERROR || m == NULL)
+        st = ProMdlnameInit(base, PRO_MDLFILE_ASSEMBLY, &m);
+    if (st == PRO_TK_NO_ERROR && m != NULL)
+    {
+        ProMdlName  got;
+        ProMdlType  mt = PRO_MDL_UNUSED;
+
+        got[0] = L'\0';
+        ProMdlMdlnameGet(m, got);
+        ProMdlTypeGet(m, &mt);
+        HLogW("HStdLoadMdl: in session ", got);
+        HLog("HStdLoadMdl: in session type=%d\n", (int)mt);
+        *out = m;
+        return PRO_TK_NO_ERROR;
+    }
+
+    /* 3) 切到库目录再按名字取，取完立刻切回 */
+    wcsncpy_s(dir, PRO_PATH_SIZE, path_noext, _TRUNCATE);
+    slash = wcsrchr(dir, L'\\');
+    if (slash != NULL)
+        *slash = L'\0';
+    if (ProDirectoryCurrentGet(old) == PRO_TK_NO_ERROR
+        && ProDirectoryChange(dir) == PRO_TK_NO_ERROR)
+    {
+        st = ProMdlnameRetrieve(base, PRO_MDLFILE_PART, &m);
+        if (st != PRO_TK_NO_ERROR)
+            st = ProMdlnameRetrieve(base, PRO_MDLFILE_ASSEMBLY, &m);
+        ProDirectoryChange(old);
+        HLog("HStdLoadMdl: chdirRetrieve -> %d\n", (int)st);
+        if (st == PRO_TK_NO_ERROR && m != NULL)
+        {
+            *out = m;
+            return PRO_TK_NO_ERROR;
+        }
+    }
+
+    HLogW("HStdLoadMdl: failed ", path_noext);
+    return (st != PRO_TK_NO_ERROR) ? st : PRO_TK_GENERAL_ERROR;
+}
+
+/* 族表列（驱动项）遍历：把每个列的 id/类型/名字连同 ProFamtableItem 本体
+   一起抄下来。ProFamtableItem 是 {type, 列名字符串, owner} 的值结构，不是
+   不透明句柄，整块 memcpy 之后仍然可以拿去问值。 */
+static ProError HStdColVisit(ProFamtableItem *item, ProError status, ProAppData app)
+{
+    ProModelitem mi;
+    int          i = g_ft_ncol;
+
+    (void)status;
+    (void)app;
+    if (i >= HSTD_COL_MAX)
+        return PRO_TK_NO_ERROR;
+
+    g_ft_item[i]       = *item;
+    g_ft_colid[i]      = 0;
+    g_ft_coltype[i]    = (int)PRO_DIMENSION;
+    g_ft_colname[i][0] = L'\0';
+
+    if (ProFamtableItemToModelitem(item, &mi) == PRO_TK_NO_ERROR)
+    {
+        g_ft_colid[i]   = mi.id;
+        g_ft_coltype[i] = (int)mi.type;
+        ProModelitemNameGet(&mi, g_ft_colname[i]);
+    }
+    HLog("HStdColVisit: #%d id=%d type=%d name=%ls\n",
+         i, g_ft_colid[i], g_ft_coltype[i], g_ft_colname[i]);
+    g_ft_ncol++;
+    return PRO_TK_NO_ERROR;
+}
+
+/* 实例遍历：记名字，同时把这一行的**全部驱动值**读出来。
+   这一步必须在第一次 Init 的那个句柄上做，否则全拿不到。 */
+static ProError HStdInstVisit(ProFaminstance *inst, ProError status, ProAppData app)
+{
+    HStdDlg *d = (HStdDlg *)app;
+    int      k, n;
+
+    if (status != PRO_TK_NO_ERROR || d == NULL || inst == NULL)
+        return PRO_TK_NO_ERROR;
+    if (d->ninst >= HSTD_MAX_INST)
+        return PRO_TK_GENERAL_ERROR;        /* 满了就停 */
+
+    n = d->ninst;
+    wcsncpy_s(d->inst[n], HSTD_NAME, inst->name, _TRUNCATE);
+
+    for (k = 0; k < HSTD_COL_MAX; k++)
+        g_ft_vals[n][k] = HSTD_NOVAL;
+
+    for (k = 0; k < g_ft_ncol; k++)
+    {
+        ProParamvalue v;
+
+        memset(&v, 0, sizeof(v));
+        if (ProFaminstanceValueGet(inst, &g_ft_item[k], &v) != PRO_TK_NO_ERROR)
+            continue;
+        if (v.type == PRO_PARAM_DOUBLE)
+            g_ft_vals[n][k] = v.value.d_val;
+        else if (v.type == PRO_PARAM_INTEGER)
+            g_ft_vals[n][k] = (double)v.value.i_val;
+    }
+
+    if (n < 3)                              /* 头三条留个样本给日志 */
+    {
+        HLog("HStdInstVisit[%d]: ", n);
+        for (k = 0; k < g_ft_ncol && k < 12; k++)
+            HLog("%ls=%.4f ", g_ft_colname[k], g_ft_vals[n][k]);
+        HLog("\n");
+    }
+    d->ninst++;
+    return PRO_TK_NO_ERROR;
+}
+
+/* 兜底：从 <类别>\<类名>.idx 里取这个零件的实例名。
+   行格式（HelloCreo）：  2   GB6170_六角螺母M10      GB6170_六角螺母
+   第 2 列 = 实例名，第 3 列 = 基件名（大小写常和文件名不一致，按 _wcsicmp 比）。
+   Creo 的族表遍历偶尔给 0（原因见 HStdLoadInsts 里的注释），这时用它顶上。 */
+static int HStdIdxInsts(HStdDlg *d, const wchar_t *partname)
+{
+    static ProLine   lines[700];
+    wchar_t          pat[PRO_PATH_SIZE];
+    WIN32_FIND_DATAW fd;
+    HANDLE           h;
+    int              got = 0;
+
+    if (d->cat_sel < 0 || d->cat_sel >= d->ncat)
+        return 0;
+
+    swprintf_s(pat, PRO_PATH_SIZE, L"%ls\\*.idx", d->cat[d->cat_sel].path);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+
+    do
+    {
+        wchar_t  f[PRO_PATH_SIZE];
+        int      n, i;
+
+        if (_wcsicmp(fd.cFileName, L"index.idx") == 0)
+            continue;
+        if (HStdJoinW(f, PRO_PATH_SIZE, d->cat[d->cat_sel].path, fd.cFileName) != 0)
+            continue;
+        n = HReadTplLinesW(f, lines, 700);
+        if (n <= 0)
+            continue;
+
+        for (i = 0; i < n; i++)
+        {
+            wchar_t *p = lines[i];
+            wchar_t *inst, *gen, *end;
+
+            while (*p == L' ' || *p == L'\t')
+                p++;
+            if (*p < L'0' || *p > L'9')
+                continue;                       /* MB_INST_IDX 那行 */
+            while (*p >= L'0' && *p <= L'9')
+                p++;                            /* 序号 */
+            while (*p == L' ' || *p == L'\t')
+                p++;
+            if (*p == L'\0')
+                continue;
+            inst = p;
+            while (*p != L'\0' && *p != L' ' && *p != L'\t')
+                p++;
+            if (*p != L'\0')
+                *p++ = L'\0';
+            while (*p == L' ' || *p == L'\t')
+                p++;
+            gen = p;
+            end = p;
+            while (*end != L'\0')
+                end++;
+            while (end > gen && (end[-1] == L' ' || end[-1] == L'\t'))
+                *--end = L'\0';
+            if (gen[0] == L'\0' || _wcsicmp(gen, partname) != 0)
+                continue;
+            if (got >= HSTD_MAX_INST)
+                break;
+            wcsncpy_s(d->inst[got], HSTD_NAME, inst, _TRUNCATE);
+            got++;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+
+    HLog("HStdIdxInsts: %d instances for this part (from idx)\n", got);
+    return got;
+}
+
+/* 问 Creo 要这个零件的族表实例（缓存：同一个零件只问一次） */
+/* 把当前 d 里的实例名单存进缓存（按零件全路径作 key） */
+static void HStdCachePut(const wchar_t *key, HStdDlg *d)
+{
+    HStdCache *c;
+
+    if (g_hstd_ncache >= HSTD_CACHE_MAX || key == NULL || key[0] == L'\0')
+        return;
+    if (d->ninst <= 0)
+        return;
+    /* 只缓存「真的读到族表」的零件。nofam 不缓存：那可能是 Creo 这次
+       没读出来（-4），下次切换还应该再试一次。 */
+    if (d->nofam)
+        return;
+
+    c = &g_hstd_cache[g_hstd_ncache];
+    c->names = (wchar_t *)malloc((size_t)d->ninst * sizeof(d->inst[0]));
+    if (c->names == NULL)
+        return;
+
+    memcpy(c->names, d->inst, (size_t)d->ninst * sizeof(d->inst[0]));
+    c->n     = d->ninst;
+    c->nofam = d->nofam;
+    wcsncpy_s(c->key, PRO_PATH_SIZE, key, _TRUNCATE);
+
+    /* 连同族表列与整行值一起存（大小要和 d->inst 一样多行） */
+    c->ncol = (g_ft_ncol > HSTD_COL_MAX) ? HSTD_COL_MAX : g_ft_ncol;
+    memset(c->colid, 0, sizeof(c->colid));
+    memset(c->coltype, 0, sizeof(c->coltype));
+    c->vals = NULL;
+    if (c->ncol > 0 && d->ninst <= HSTD_MAX_INST)
+    {
+        int k;
+
+        for (k = 0; k < c->ncol; k++)
+        {
+            c->colid[k]   = g_ft_colid[k];
+            c->coltype[k] = g_ft_coltype[k];
+        }
+        c->vals = (double *)malloc((size_t)d->ninst * HSTD_COL_MAX * sizeof(double));
+        if (c->vals != NULL)
+            memcpy(c->vals, g_ft_vals, (size_t)d->ninst * HSTD_COL_MAX * sizeof(double));
+    }
+
+    g_hstd_ncache++;
+    HLog("HStdCachePut: %d instances, %d cols (cache %d/%d)\n",
+         c->n, c->ncol, g_hstd_ncache, HSTD_CACHE_MAX);
+}
+
+/* 缓存命中就把名单铺回 d，返回 1 */
+static int HStdCacheGet(const wchar_t *key, HStdDlg *d)
+{
+    int i;
+
+    if (key == NULL)
+        return 0;
+    for (i = 0; i < g_hstd_ncache; i++)
+    {
+        HStdCache *c = &g_hstd_cache[i];
+
+        if (wcscmp(c->key, key) != 0)
+            continue;
+
+        d->ninst = (c->n > HSTD_MAX_INST) ? HSTD_MAX_INST : c->n;
+        d->nofam = c->nofam;
+        d->ftbad = 0;               /* 能进缓存的都是真读到表的零件 */
+        d->verinfo[0] = L'\0';
+        if (d->ninst > 0 && c->names != NULL)
+            memcpy(d->inst, c->names, (size_t)d->ninst * sizeof(d->inst[0]));
+        d->inst_sel = 0;
+        HLog("HStdCacheGet: hit, %d instances\n", d->ninst);
+        return 1;
+    }
+    return 0;
+}
+
+static HStdCache *HStdCacheFind(const wchar_t *key)
+{
+    int i;
+
+    if (key == NULL || key[0] == L'\0')
+        return NULL;
+    for (i = 0; i < g_hstd_ncache; i++)
+        if (_wcsicmp(g_hstd_cache[i].key, key) == 0)
+            return &g_hstd_cache[i];
+    return NULL;
+}
+
+static int HStdLoadInsts(HStdDlg *d)
+{
+    ProMdl      gen = NULL;
+    ProFamtable famtab;
+    ProError    st;
+    HStdEnt    *p;
+    int         famtab_bad = 0;
+
+    if (d->part_sel < 0 || d->part_sel >= d->npart)
+    {
+        d->ninst    = 0;
+        d->nofam    = 0;
+        d->inst_sel = -1;
+        return 0;
+    }
+    p = &d->part[d->part_sel];
+
+    /* 当前零件路径必须**先**记下：命中缓存时后面那个赋值不会执行，
+       否则插入时会去上一个零件的族表缓存里找值。 */
+    wcsncpy_s(g_hstd_curpath, PRO_PATH_SIZE, p->path, _TRUNCATE);
+
+    /* ① 只上过一次族表就已经读过的零件，直接给名单。
+          Creo 12 第二次问同一个模型会返回空表，这里必须挡住。 */
+    if (HStdCacheGet(p->path, d))
+        return d->ninst;
+
+    d->ninst      = 0;
+    d->nofam      = 0;
+    d->ftbad      = 0;
+    d->verinfo[0] = L'\0';
+    d->inst_sel   = -1;
+    wcsncpy_s(d->loaded, HSTD_NAME, p->name, _TRUNCATE);
+
+    st = HStdLoadMdl(p->path, &gen);
+    if (st != PRO_TK_NO_ERROR || gen == NULL)
+    {
+        HMsg("TD_STD_NOLOAD");
+        return 0;
+    }
+
+    st = ProFamtableInit(gen, &famtab);
+    HLog("HStdLoadInsts: famtableInit -> %d\n", (int)st);
+    if (st == PRO_TK_NO_ERROR)
+    {
+        ProError ck = ProFamtableCheck(&famtab);
+
+        HLog("HStdLoadInsts: famtableCheck -> %d (EMPTY=%d)\n",
+             (int)ck, (int)PRO_TK_EMPTY);
+        /* 表能打开、但不是「空」而是别的码（实测 -4）＝ 表在，只是读不出来。
+           这跟「零件本来就没有族表」是两回事，不能混着报。 */
+        if (ck != PRO_TK_NO_ERROR && ck != PRO_TK_EMPTY)
+            famtab_bad = 1;
+        /* ★ 这里是唯一能读到族的时刻：先读列，再带着列读每个实例的整行值 */
+        g_ft_ncol = 0;
+        memset(g_ft_item, 0, sizeof(g_ft_item));
+        st = ProFamtableItemVisit(&famtab, HStdColVisit, NULL, NULL);
+        HLog("HStdLoadInsts: itemVisit -> %d cols=%d\n", (int)st, g_ft_ncol);
+
+        st = ProFamtableInstanceVisit(&famtab, HStdInstVisit, NULL, d);
+        HLog("HStdLoadInsts: visit -> %d, %d instances\n", (int)st, d->ninst);
+        /* 刻意不调 ProFamtableErase：实测 Erase 之后同一个模型再 Init
+           会拿到空表（famtableCheck 由 0 变 -4）。这一点泄漏可以接受。 */
+    }
+
+    if (d->ninst == 0)                      /* Creo 给 0 → 用厂商 idx 兜底 */
+    {
+        int n = HStdIdxInsts(d, p->name);
+
+        if (n > 0)
+        {
+            d->ninst = n;
+            HLog("HStdLoadInsts: fallback to idx, %d instances\n", n);
+        }
+    }
+
+    if (d->ninst == 0 && famtab_bad)
+    {
+        wchar_t newest[HSTD_NAME];
+        int     v = HStdNewestVerW(p->path, newest, HSTD_NAME);
+
+        d->ftbad = 1;
+        HLog("HStdLoadInsts: 族表读取失败，目录里最新文件 v%d %ls\n", v, newest);
+        if (v > 1)
+        {
+            HLog("HStdLoadInsts: !!! 存在被保存过的 v%d，Creo 会优先读它\n", v);
+            swprintf_s(d->verinfo, HSTD_NAME, L"目录里有 %ls", newest);
+        }
+        else
+            wcsncpy_s(d->verinfo, HSTD_NAME, L"请查 h_load.log", _TRUNCATE);
+    }
+
+    if (d->ninst == 0)                      /* 真没有族表 → 直接插基件 */
+    {
+        d->nofam = 1;
+        wcsncpy_s(d->inst[0], HSTD_NAME, p->name, _TRUNCATE);
+        d->ninst = 1;
+        HLog("HStdLoadInsts: no family table, use generic\n");
+    }
+    d->inst_sel = 0;
+
+    /* ② 存起来，以后同一个零件不再问 Creo */
+    HStdCachePut(p->path, d);
+    return d->ninst;
+}
+
+/* ---- 族表实例模型：Creo 12 上怎么把它造出来 ------------------------------
+   Creo 12 把 ProFaminstanceCreate 从 SDK 里整个删掉了（Creo 6 头文件里它还挂着
+   DEPRECATED since Creo 3，但运行时直接回 -34 = PRO_TK_OBSOLETE_FUNC）。
+   剩下两条路都要求模型**已经存在**：
+       ProFaminstanceMdlGet  —— 会话里已有
+       ProFaminstanceRetrieve —— 磁盘上有 <实例名>.prt
+   HelloCreo 这套库的 1615 个规格只写在族表定义里、从没落成 .prt 文件，
+   所以两条都不通，这就是「这个零件没有可插入的族表实例」的真因。
+
+   于是自己做：读族表里这一行的值 → 复制一份基件 → 把值灌进副本 → 再生。
+   得到的副本几何等于 Creo 自己「验证实例」的结果，而且副本是独立模型，
+   不会污染库里的基件（基件在会话里始终是原样）。
+
+   值的来源：族表项在 Creo 12 上遍历不出来（ItemVisit 给 0 条、
+   ModelitemToFamtableItem 全失败），但 ProFamtableItem 是个可自建的
+   结构 {type, 列名, owner}，于是拿尺寸符号拼出列名（$d2）直接问
+   ProFaminstanceValueGet。拿到的值按 id 灌回副本（复制不改 id）。
+   ------------------------------------------------------------------------ */
+#define HSTD_SPEC_MAX 8
+
+/* ★ 结论（2026-10-28 实测 + 二进制核对）：这套库的族表在 Creo 12 上
+   「只有实例名，没有可用的列」——
+     ProFamtableItemVisit        -> 0 条
+     ProModelitemToFamtableItem  -> 每个尺寸都失败
+     自建 ProFamtableItem 问值    -> 全部 -2 (BAD_INPUTS)
+     ProFaminstanceCreate        -> -34 (OBSOLETE_FUNC，12 已删)
+     ProFaminstanceRetrieve      -> -24 (磁盘上没有实例 prt)
+   文件里的 info_items 是 27 条同一类型(0x15)的遗留项，Creo 自己弹的
+   「在族表中未找到项」就是读不出它们。所以 1615 个规格**拿不到驱动值**，
+   任何 API 都变不出对应几何。
+
+   退而求其次：这套库的尺寸被作者改成了中文语义名（螺纹规格 / 螺纹长度 /
+   螺丝头外径 …），实例名本身又带规格（M1_6X3、M10X100、D10）。
+   于是按名字解析出「螺纹规格 / 长度」，直接改基件副本上的两个主参数再再生，
+   其余尺寸靠模型内部关系联动。这是唯一还能自动出图的路径。            */
+
+typedef struct
+{
+    /* 从实例名解析出来的规格 */
+    double       thr, len;
+    int          has_thr, has_len;
+
+    /* 在第副本上找到的目标尺寸 */
+    ProDimension dthr, dlen, ddia;
+    int          has_dthr, has_dlen, has_ddia;
+
+    int          ndim, nset, nfail, nlog;
+} HStdSpecCtx;
+
+static int HStdHasW(const wchar_t *s, const wchar_t *sub)
+{
+    return wcsstr(s, sub) != NULL;
+}
+
+/* 副本名字统一加 HSTD_ 前缀：既不和族表实例名撞，又好认。
+   同规格再插会命中会话里已有的这份，直接复用。 */
+static void HStdCopyName(wchar_t *out, size_t cap, const wchar_t *iname)
+{
+    swprintf_s(out, cap, L"HSTD_%s", iname);
+}
+
+/* M1_6 -> 1.6（下划线当小数点） */
+static double HStdNumW(const wchar_t *s, const wchar_t **end)
+{
+    double v = 0.0, frac = 0.1;
+    int    infrac = 0;
+
+    while (*s)
+    {
+        if (*s >= L'0' && *s <= L'9')
+        {
+            if (!infrac)
+                v = v * 10.0 + (double)(*s - L'0');
+            else
+            {
+                v += (double)(*s - L'0') * frac;
+                frac /= 10.0;
+            }
+            s++;
+        }
+        else if (*s == L'_' && !infrac)
+        {
+            infrac = 1;
+            s++;
+        }
+        else
+            break;
+    }
+    *end = s;
+    return v;
+}
+
+/* 从实例名里挖 M<x>[X<y>] / D<x> */
+static void HStdParseSpec(const wchar_t *iname, HStdSpecCtx *c)
+{
+    const wchar_t *p;
+
+    for (p = iname; *p; p++)
+    {
+        const wchar_t *q;
+
+        if (p == iname)
+            continue;
+        if ((*p == L'M' || *p == L'm' || *p == L'D' || *p == L'd')
+            && p[1] >= L'0' && p[1] <= L'9')
+        {
+            c->thr     = HStdNumW(p + 1, &q);
+            c->has_thr = 1;
+            if ((*q == L'X' || *q == L'x') && q[1] >= L'0' && q[1] <= L'9')
+            {
+                c->len     = HStdNumW(q + 1, &q);
+                c->has_len = 1;
+            }
+            break;
+        }
+    }
+}
+
+static ProError HStdFindCb(ProDimension *dim, ProError status, ProAppData app)
+{
+    HStdSpecCtx *c = (HStdSpecCtx *)app;
+    ProName      nm;
+
+    (void)status;
+    c->ndim++;
+    nm[0] = L'\0';
+    if (ProDimensionSymbolGet(dim, nm) != PRO_TK_NO_ERROR || nm[0] == L'\0')
+        return PRO_TK_NO_ERROR;
+
+    if (!c->has_dthr && (HStdHasW(nm, L"规格") || HStdHasW(nm, L"公称")))
+    {
+        c->dthr     = *dim;
+        c->has_dthr = 1;
+        return PRO_TK_NO_ERROR;
+    }
+    if (!c->has_dlen && HStdHasW(nm, L"长度"))
+    {
+        c->dlen     = *dim;
+        c->has_dlen = 1;
+        return PRO_TK_NO_ERROR;
+    }
+    if (!c->has_ddia && (HStdHasW(nm, L"内径") || HStdHasW(nm, L"直径")))
+    {
+        c->ddia     = *dim;
+        c->has_ddia = 1;
+    }
+    return PRO_TK_NO_ERROR;
+}
+
+/* 再生之后把尺寸值打出来，用来核对关系有没有跟着动 */
+static ProError HStdDumpCb(ProDimension *dim, ProError status, ProAppData app)
+{
+    HStdSpecCtx *c = (HStdSpecCtx *)app;
+    ProName      nm;
+    double       v;
+
+    (void)status;
+    if (c->nlog >= 10)
+        return PRO_TK_NO_ERROR;
+    if (ProDimensionSymbolGet(dim, nm) != PRO_TK_NO_ERROR || nm[0] == L'\0')
+        return PRO_TK_NO_ERROR;
+    if (ProDimensionValueGet(dim, &v) != PRO_TK_NO_ERROR)
+        return PRO_TK_NO_ERROR;
+    c->nlog++;
+    HLogW("HStdBuildInst:   dim ", nm);
+    HLog("HStdBuildInst:      = %.4f\n", v);
+    return PRO_TK_NO_ERROR;
+}
+
+static void HStdSetDim(ProDimension *d, double v, HStdSpecCtx *c, const char *tag)
+{
+    ProError st = ProDimensionValueSet(d, v);
+
+    if (st == PRO_TK_NO_ERROR)
+        c->nset++;
+    else
+    {
+        c->nfail++;
+        HLog("%s -> %d (v=%.4f)\n", tag, (int)st, v);
+    }
+}
+
+/* 复制基件 → 把族表这一行的**全部**驱动值灌进去 → 再生。
+   这才是等价于 Creo 自己算出来的那个实例；只改两个尺寸会造出
+   「M30 的杆 + M1.6 的头」。失败返回 NULL（绝不返回半成品）。 */
+static ProMdl HStdBuildInstFull(ProMdl gen, const wchar_t *iname,
+                                HStdCache *c, int idx)
+{
+    ProMdl     cp = NULL;
+    ProMdlName newname;
+    ProError   st;
+    int        k, nset = 0, nfail = 0, nskip = 0;
+
+    HStdCopyName(newname, PRO_MDLNAME_SIZE, iname);
+    st = ProMdlnameCopy(gen, newname, &cp);
+    HLog("HStdBuildInstFull: copy -> %d mdl=%p cols=%d\n",
+         (int)st, (void *)cp, c->ncol);
+    if (st != PRO_TK_NO_ERROR || cp == NULL)
+        return NULL;
+
+    for (k = 0; k < c->ncol; k++)
+    {
+        double       v = c->vals[(size_t)idx * HSTD_COL_MAX + k];
+        ProModelitem mi;
+
+        if (v == HSTD_NOVAL)
+        {
+            nskip++;
+            continue;
+        }
+        if (c->coltype[k] != (int)PRO_DIMENSION)
+        {
+            HLog("HStdBuildInstFull: col %d type=%d 不是尺寸，跳过\n",
+                 k, c->coltype[k]);
+            nskip++;
+            continue;
+        }
+        if (c->colid[k] == 0 ||
+            ProModelitemInit(cp, c->colid[k], PRO_DIMENSION, &mi) != PRO_TK_NO_ERROR)
+        {
+            HLog("HStdBuildInstFull: col %d id=%d 在副本上找不到\n",
+                 k, c->colid[k]);
+            nfail++;
+            continue;
+        }
+        if (ProDimensionValueSet((ProDimension *)&mi, v) != PRO_TK_NO_ERROR)
+        {
+            HLog("HStdBuildInstFull: col %d id=%d = %.4f 设值失败\n",
+                 k, c->colid[k], v);
+            nfail++;
+        }
+        else
+        {
+            nset++;
+            HLog("HStdBuildInstFull: set id=%-3d = %.4f\n", c->colid[k], v);
+        }
+    }
+
+    st = ProSolidRegenerate((ProSolid)cp, PRO_REGEN_NO_FLAGS);
+    HLog("HStdBuildInstFull: regen -> %d set=%d fail=%d skip=%d\n",
+         (int)st, nset, nfail, nskip);
+    if (st != PRO_TK_NO_ERROR || nset == 0)
+    {
+        ProMdlErase(cp);
+        HLog("HStdBuildInstFull: 再生失败或一个值都没灌进，丢弃\n");
+        return NULL;
+    }
+    return cp;
+}
+
+/* 解析名字 → 复制基件 → 改主参数 → 再生。失败返回 NULL */
+static ProMdl HStdBuildInst(ProMdl gen, const wchar_t *iname)
+{
+    HStdSpecCtx ctx;
+    ProMdl      cp = NULL;
+    ProMdlName  newname;
+    ProError    st;
+
+    /* ★ 首选：用对话框加载时抄下来的整行族表值 */
+    {
+        HStdCache *c = HStdCacheFind(g_hstd_curpath);
+        int        idx = -1, i;
+
+        if (c != NULL && c->ncol > 0 && c->vals != NULL)
+        {
+            for (i = 0; i < c->n && i < HSTD_MAX_INST; i++)
+                if (_wcsicmp(c->names + (size_t)i * HSTD_NAME, iname) == 0)
+                {
+                    idx = i;
+                    break;
+                }
+        }
+        if (idx >= 0)
+        {
+            HLog("HStdBuildInst: 用族表整行值 (inst #%d, %d 列)\n", idx, c->ncol);
+            return HStdBuildInstFull(gen, iname, c, idx);
+        }
+        HLog("HStdBuildInst: 没有可用族表值 (cache=%s ncol=%d)，退回按名字\n",
+             c ? "有" : "无", c ? c->ncol : -1);
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    HStdParseSpec(iname, &ctx);
+    HLog("HStdBuildInst: spec thr=%.4f(%d) len=%.4f(%d)\n",
+         ctx.thr, ctx.has_thr, ctx.len, ctx.has_len);
+    if (!ctx.has_thr && !ctx.has_len)
+        return NULL;
+
+    HStdCopyName(newname, PRO_MDLNAME_SIZE, iname);
+    st = ProMdlnameCopy(gen, newname, &cp);
+    HLog("HStdBuildInst: copy -> %d mdl=%p\n", (int)st, (void *)cp);
+    if (st != PRO_TK_NO_ERROR || cp == NULL)
+        return NULL;
+
+    st = ProSolidDimensionVisit((ProSolid)cp, PRO_B_FALSE, HStdFindCb, NULL, &ctx);
+    HLog("HStdBuildInst: find -> %d dims=%d thr=%d len=%d dia=%d\n",
+         (int)st, ctx.ndim, ctx.has_dthr, ctx.has_dlen, ctx.has_ddia);
+
+    if (ctx.has_thr)
+    {
+        if (ctx.has_dthr)
+            HStdSetDim(&ctx.dthr, ctx.thr, &ctx, "HStdBuildInst: set 规格");
+        else if (ctx.has_ddia)
+            HStdSetDim(&ctx.ddia, ctx.thr, &ctx, "HStdBuildInst: set 直径");
+    }
+    if (ctx.has_len && ctx.has_dlen)
+        HStdSetDim(&ctx.dlen, ctx.len, &ctx, "HStdBuildInst: set 长度");
+
+    if (ctx.nset == 0)
+    {
+        HLog("HStdBuildInst: nothing settable, abort\n");
+        return NULL;                     /* 别插一个尺寸根本没变的假实例 */
+    }
+
+    st = ProSolidRegenerate((ProSolid)cp, PRO_REGEN_NO_FLAGS);
+    HLog("HStdBuildInst: regen -> %d set=%d fail=%d\n",
+         (int)st, ctx.nset, ctx.nfail);
+
+    if (st != PRO_TK_NO_ERROR)
+    {
+        /* 再生失败 = 这个副本的几何是坏的（实测表现为草绘截面崩掉），
+           绝不能插进装配。卸掉它，让调用方按「没能生成」处理。 */
+        HLog("HStdBuildInst: regen failed, drop this copy\n");
+        ProMdlErase(cp);
+        return NULL;
+    }
+
+    ProSolidDimensionVisit((ProSolid)cp, PRO_B_FALSE, HStdDumpCb, NULL, &ctx);
+    return cp;
+}
+
+/* 拿到「这个规格的模型」：
+   ① 本插件自己之前造过的那份副本（会话里同名，名字带 HSTD_ 前缀）
+   ② 会话里真有这个实例模型（个别库会自带实例文件）
+   ③ 按名字里的规格改基件副本（HStdBuildInst）
+   注：不再调 ProMdlnameRetrieve / ProFaminstanceRetrieve —— 它们对这套库
+   必然失败，而且每次都在界面弹「在族表中未找到项 / 无法检索」，纯噪音。 */
+static ProMdl HStdInstMdl(ProMdl gen, const wchar_t *iname)
+{
+    ProMdl         inst = NULL;
+    ProFamtable    ft;
+    ProFaminstance fi;
+    ProError       st;
+    ProMdlName     cmname;
+
+    HStdCopyName(cmname, PRO_MDLNAME_SIZE, iname);
+    st = ProMdlnameInit(cmname, PRO_MDL_PART, &inst);
+    if (st == PRO_TK_NO_ERROR && inst != NULL)
+    {
+        HLog("HStdInstMdl: 1 copy already in session\n");
+        return inst;
+    }
+    inst = NULL;
+
+    /* ★ 不再在这里第二次 ProFamtableInit。
+       实测 Creo 12 对同一个模型第二次 Init 会拿到空表（-4），
+       之前所有「族表列读不出来」的结论都是在那个坏句柄上测的。
+       值和列已经在 HStdLoadInsts 那一次里存进缓存了，这里直接用。 */
+    (void)ft;
+    (void)fi;
+    HLog("HStdInstMdl: 3 build from family table values\n");
+    return HStdBuildInst(gen, iname);
+}
+
+
+
+/* 把选中的规格插进当前装配。返回 0 = 成功 */
+static int HStdInsertOne(HStdDlg *d)
+{
+    ProMdl        asm_mdl = NULL;
+    ProMdlType    at      = PRO_MDL_UNUSED;
+    ProMdl        gen = NULL, inst_mdl = NULL;
+    ProAsmcomp    comp;
+    ProMatrix     mtx;
+    ProName       iname;
+    ProError      st;
+    HStdEnt      *p;
+    int           i, j;
+
+    if (d->part_sel < 0 || d->part_sel >= d->npart)
+        return -1;
+    p = &d->part[d->part_sel];
+
+    if (ProMdlCurrentGet(&asm_mdl) != PRO_TK_NO_ERROR || asm_mdl == NULL)
+    {
+        HMsg("TD_ASSY_ONLY");
+        return -1;
+    }
+    ProMdlTypeGet(asm_mdl, &at);
+    if (at != PRO_MDL_ASSEMBLY)
+    {
+        HMsg("TD_ASSY_ONLY");
+        return -1;
+    }
+
+    st = HStdLoadMdl(p->path, &gen);
+    if (st != PRO_TK_NO_ERROR || gen == NULL)
+    {
+        HMsg("TD_STD_NOLOAD");
+        return -1;
+    }
+
+    inst_mdl = gen;                 /* 没有族表时的保底：直接插基件 */
+    if (!d->nofam && d->inst_sel >= 0 && d->inst_sel < d->ninst)
+    {
+        /* 走族表：必须拿到真正对应这个规格的模型。拿不到就报错，
+           绝不能退回基件 —— 否则插进去的和选的规格不是一回事。 */
+        wcsncpy_s(iname, PRO_NAME_SIZE, d->inst[d->inst_sel], _TRUNCATE);
+        HLogW("HStdInsertOne: instName ", iname);
+        inst_mdl = HStdInstMdl(gen, iname);
+        if (inst_mdl == NULL)
+        {
+            HLog("HStdInsertOne: no instance model\n");
+            HMsg("TD_STD_NOINST");
+            return -1;
+        }
+    }
+
+    for (i = 0; i < 4; i++)
+        for (j = 0; j < 4; j++)
+            mtx[i][j] = (i == j) ? 1.0 : 0.0;
+
+    st = ProAsmcompAssemble((ProAssembly)asm_mdl, (ProSolid)inst_mdl, mtx, &comp);
+    HLog("HStdInsertOne: assemble -> %d\n", (int)st);
+    if (st != PRO_TK_NO_ERROR)
+    {
+        HMsg("TD_STD_FAIL");
+        return -1;
+    }
+
+    ProWindowRepaint(PRO_VALUE_UNUSED);
+    HMsg("TD_STD_OK");
+    return 0;
+}
+
+/* ---- 缩略图预览 ----------------------------------------------------------
+   库目录里每个零件旁边都有一张同名 png（HelloCreo 给的是 198x250 的 RGB），
+   直接拿来当预览图。
+
+   为什么用 WIC 而不是 GDI+：gdiplus.h 开头就是 `namespace Gdiplus`，只能 C++
+   编译；本项目是 .c、cl 按 C 编，实测 include 直接语法错。WIC 的 wincodec.h
+   是 C 兼容的，SDK 自带、不需要额外运行时。
+
+   流程：WIC 解码成 32bpp BGR 缓冲 → 白底 32 位 DIB → StretchDIBits 等比缩放
+   居中。任何一步失败就静默放弃（保留空白），绝不因为一张图弹错误。
+   -------------------------------------------------------------------------- */
+static HBITMAP HWicLoadPng(const wchar_t *path, int dw, int dh)
+{
+    IWICImagingFactory    *fac = NULL;
+    IWICBitmapDecoder     *dec = NULL;
+    IWICBitmapFrameDecode *frm = NULL;
+    IWICFormatConverter   *con = NULL;
+    BITMAPINFO  bmi, sbi;
+    BYTE       *buf = NULL;
+    HBITMAP     hbm = NULL;
+    HDC         dc = NULL, mdc = NULL;
+    HGDIOBJ     old = NULL;
+    UINT        sw = 0, sh = 0;
+    int         x, y, w2, h2, good = 0;
+    double      s, s1, s2;
+
+    if (dw < 8 || dh < 8)
+        return NULL;
+
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);   /* 已初始化过也无所谓 */
+
+    if (CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
+                         &IID_IWICImagingFactory, (void **)&fac) != S_OK
+        || fac == NULL)
+    {
+        HLog("HWicLoadPng: WIC factory failed\n");
+        return NULL;
+    }
+    if (fac->lpVtbl->CreateDecoderFromFilename(fac, path, NULL, GENERIC_READ,
+            WICDecodeMetadataCacheOnLoad, &dec) != S_OK || dec == NULL)
+    {
+        HLogW("HWicLoadPng: decode open failed ", path);
+        goto done;
+    }
+    if (dec->lpVtbl->GetFrame(dec, 0, &frm) != S_OK || frm == NULL)
+        goto done;
+    if (frm->lpVtbl->GetSize(frm, &sw, &sh) != S_OK || sw == 0 || sh == 0)
+        goto done;
+    if (fac->lpVtbl->CreateFormatConverter(fac, &con) != S_OK || con == NULL)
+        goto done;
+    if (con->lpVtbl->Initialize(con, (IWICBitmapSource *)frm,
+            &GUID_WICPixelFormat32bppBGR, WICBitmapDitherTypeNone, NULL, 0.0,
+            WICBitmapPaletteTypeCustom) != S_OK)
+        goto done;
+
+    buf = (BYTE *)malloc((size_t)sw * (size_t)sh * 4);
+    if (buf == NULL)
+        goto done;
+    if (con->lpVtbl->CopyPixels(con, NULL, sw * 4,
+            (UINT)((size_t)sw * sh * 4), buf) != S_OK)
+        goto done;
+
+    memset(&bmi, 0, sizeof(bmi));
+    bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth       = dw;
+    bmi.bmiHeader.biHeight      = -dh;          /* 负数 = 自上而下 */
+    bmi.bmiHeader.biPlanes      = 1;
+    bmi.bmiHeader.biBitCount    = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    dc  = GetDC(NULL);
+    hbm = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, NULL, NULL, 0);
+    if (hbm == NULL)
+        goto done;
+    mdc = CreateCompatibleDC(dc);
+    if (mdc == NULL)
+        goto done;
+    old = SelectObject(mdc, hbm);
+    {
+        RECT   rc;
+        HBRUSH br = (HBRUSH)GetStockObject(WHITE_BRUSH);
+
+        rc.left = 0; rc.top = 0; rc.right = dw; rc.bottom = dh;
+        FillRect(mdc, &rc, br);
+    }
+
+    /* 等比缩放，最多放大到 1:1（小图不硬拉，免得糊） */
+    s1 = (double)(dw - 8) / (double)sw;
+    s2 = (double)(dh - 8) / (double)sh;
+    s  = (s1 < s2) ? s1 : s2;
+    if (s > 1.0)
+        s = 1.0;
+    w2 = (int)((double)sw * s);
+    h2 = (int)((double)sh * s);
+    if (w2 < 1) w2 = 1;
+    if (h2 < 1) h2 = 1;
+    x = (dw - w2) / 2;
+    y = (dh - h2) / 2;
+
+    memset(&sbi, 0, sizeof(sbi));
+    sbi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    sbi.bmiHeader.biWidth       = (LONG)sw;
+    sbi.bmiHeader.biHeight      = -(LONG)sh;
+    sbi.bmiHeader.biPlanes      = 1;
+    sbi.bmiHeader.biBitCount    = 32;
+    sbi.bmiHeader.biCompression = BI_RGB;
+
+    SetStretchBltMode(mdc, HALFTONE);
+    SetBrushOrgEx(mdc, 0, 0, NULL);
+    StretchDIBits(mdc, x, y, w2, h2, 0, 0, (int)sw, (int)sh, buf, &sbi,
+                  DIB_RGB_COLORS, SRCCOPY);
+    good = 1;
+
+done:
+    if (mdc != NULL)
+    {
+        SelectObject(mdc, old);
+        DeleteDC(mdc);
+    }
+    if (dc != NULL)
+        ReleaseDC(NULL, dc);
+    if (buf != NULL)
+        free(buf);
+    if (con != NULL) con->lpVtbl->Release(con);
+    if (frm != NULL) frm->lpVtbl->Release(frm);
+    if (dec != NULL) dec->lpVtbl->Release(dec);
+    if (fac != NULL) fac->lpVtbl->Release(fac);
+    if (!good && hbm != NULL)
+    {
+        DeleteObject(hbm);
+        hbm = NULL;
+    }
+    return hbm;
+}
+
+/* 换预览：<类别>\<零件>.png，没有就留空 */
+static void HStdShowPreview(HStdDlg *d)
+{
+    wchar_t png[PRO_PATH_SIZE];
+    RECT    rc;
+    HBITMAP bm;
+
+    if (d == NULL || d->hprev == NULL)
+        return;
+
+    if (d->prevbm != NULL)                  /* 先撤掉旧的，再删 */
+    {
+        SendMessageW(d->hprev, STM_SETIMAGE, IMAGE_BITMAP, 0);
+        DeleteObject(d->prevbm);
+        d->prevbm = NULL;
+    }
+    if (d->hnote != NULL)
+        SetWindowTextW(d->hnote, L"");
+
+    if (d->part_sel < 0 || d->part_sel >= d->npart)
+        return;
+
+    swprintf_s(png, PRO_PATH_SIZE, L"%ls.png", d->part[d->part_sel].path);
+    if (!HFileExistsW(png))
+    {
+        HLogW("HStdShowPreview: no png ", png);
+        if (d->hnote != NULL)
+            SetWindowTextW(d->hnote, L"此零件无预览图");
+        return;
+    }
+
+    GetClientRect(d->hprev, &rc);
+    bm = HWicLoadPng(png, rc.right, rc.bottom);
+    if (bm == NULL)
+    {
+        if (d->hnote != NULL)
+            SetWindowTextW(d->hnote, L"预览图加载失败");
+        return;
+    }
+    d->prevbm = bm;
+    SendMessageW(d->hprev, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)bm);
+}
+
+static void HStdFillCats(HStdDlg *d)
+{
+    int i;
+
+    SendMessageW(d->hcat, LB_RESETCONTENT, 0, 0);
+    for (i = 0; i < d->ncat; i++)
+        SendMessageW(d->hcat, LB_ADDSTRING, 0, (LPARAM)d->cat[i].name);
+    if (d->cat_sel >= 0 && d->cat_sel < d->ncat)
+        SendMessageW(d->hcat, LB_SETCURSEL, (WPARAM)d->cat_sel, 0);
+}
+
+static void HStdFillParts(HStdDlg *d)
+{
+    int i;
+
+    SendMessageW(d->hpart, LB_RESETCONTENT, 0, 0);
+    for (i = 0; i < d->npart; i++)
+        SendMessageW(d->hpart, LB_ADDSTRING, 0, (LPARAM)d->part[i].name);
+    if (d->part_sel >= 0 && d->part_sel < d->npart)
+        SendMessageW(d->hpart, LB_SETCURSEL, (WPARAM)d->part_sel, 0);
+}
+
+static void HStdFillInsts(HStdDlg *d)
+{
+    int i;
+
+    SendMessageW(d->hinst, LB_RESETCONTENT, 0, 0);
+    for (i = 0; i < d->ninst; i++)
+        SendMessageW(d->hinst, LB_ADDSTRING, 0, (LPARAM)d->inst[i]);
+    if (d->inst_sel >= 0 && d->inst_sel < d->ninst)
+        SendMessageW(d->hinst, LB_SETCURSEL, (WPARAM)d->inst_sel, 0);
+}
+
+static void HStdInfoUpdate(HStdDlg *d)
+{
+    wchar_t buf[512];
+
+    buf[0] = L'\0';
+    if (d->part_sel >= 0 && d->part_sel < d->npart)
+    {
+        if (d->ftbad)
+            swprintf_s(buf, 512, L"%ls ｜ 族表读取失败（不是没有族表）｜ %ls",
+                       d->part[d->part_sel].name, d->verinfo);
+        else if (d->nofam)
+            swprintf_s(buf, 512, L"%ls ｜ 无族表，插入基件",
+                       d->part[d->part_sel].name);
+        else
+            swprintf_s(buf, 512, L"%ls ｜ %d 个规格%ls",
+                       d->part[d->part_sel].name, d->ninst,
+                       d->inserted ? L" ｜ 已插入，可继续选" : L"");
+    }
+    else
+        wcscpy_s(buf, 512, L"选一个零件");
+
+    SetWindowTextW(d->hinfo, buf);
+}
+
+static LRESULT CALLBACK HStdDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    HStdDlg *d = (HStdDlg *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (msg)
+    {
+    case WM_CREATE:
+    {
+        CREATESTRUCTW *cs = (CREATESTRUCTW *)lp;
+        int pad, cw, ch, bh, lw, mw, rw, y, lh;
+
+        d = (HStdDlg *)cs->lpCreateParams;
+        if (d == NULL)
+            return -1;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)d);
+        d->hwnd = hwnd;
+
+        d->font = CreateFontW(-HSD_S(d, 16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                              DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+        if (d->font == NULL)
+            d->font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+        pad = HSD_S(d, 12);
+        bh  = HSD_S(d, 30);
+        lh  = HSD_S(d, 20);
+        lw  = HSD_S(d, 190);          /* 类别 */
+        mw  = HSD_S(d, 250);          /* 零件 */
+        rw  = HSD_S(d, 300);          /* 规格 */
+        {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            cw = rc.right;
+            ch = rc.bottom;
+        }
+
+        d->hl1 = HEdCtl(hwnd, L"STATIC", L"类别", WS_CHILD | WS_VISIBLE,
+                        pad, pad, lw, lh, HSD_L1, d->font);
+        d->hl2 = HEdCtl(hwnd, L"STATIC", L"零件", WS_CHILD | WS_VISIBLE,
+                        pad + lw + pad, pad, mw, lh, HSD_L2, d->font);
+        d->hl3 = HEdCtl(hwnd, L"STATIC", L"规格", WS_CHILD | WS_VISIBLE,
+                        pad + lw + mw + pad * 2, pad, rw, lh, HSD_L3, d->font);
+
+        y = pad + lh + HSD_S(d, 4);
+        d->hcat = HEdCtl(hwnd, L"LISTBOX", L"",
+                         WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL |
+                         LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                         pad, y, lw, ch - y - HSD_S(d, 96), HSD_CAT, d->font);
+        d->hpart = HEdCtl(hwnd, L"LISTBOX", L"",
+                          WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL |
+                          LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                          pad + lw + pad, y, mw, ch - y - HSD_S(d, 96), HSD_PART, d->font);
+        d->hinst = HEdCtl(hwnd, L"LISTBOX", L"",
+                          WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL |
+                          LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                          pad + lw + mw + pad * 2, y, rw,
+                          ch - y - HSD_S(d, 96), HSD_INST, d->font);
+        d->hprev = HEdCtl(hwnd, L"STATIC", L"",
+                          WS_CHILD | WS_VISIBLE | WS_BORDER | SS_BITMAP |
+                          SS_CENTERIMAGE,
+                          pad + lw + mw + rw + pad * 3, y,
+                          cw - (pad + lw + mw + rw + pad * 3) - pad,
+                          ch - y - HSD_S(d, 122), HSD_PREV, d->font);
+        /* 预览框正下方一行小字：库里那几个没有同名 png 的零件不至于看起来像"没加载" */
+        d->hnote = HEdCtl(hwnd, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTER,
+                          pad + lw + mw + rw + pad * 3,
+                          ch - HSD_S(d, 120),
+                          cw - (pad + lw + mw + rw + pad * 3) - pad,
+                          lh, HSD_PNOTE, d->font);
+
+        d->hinfo = HEdCtl(hwnd, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                          pad, ch - HSD_S(d, 88), cw - pad * 2, lh,
+                          HSD_INFO, d->font);
+        d->htip = HEdCtl(hwnd, L"STATIC",
+                         L"双击规格直接插入；插入后模型以未约束状态出现在原点，"
+                         L"再用「元件放置」约束即可。",
+                         WS_CHILD | WS_VISIBLE,
+                         pad, ch - HSD_S(d, 64), cw - pad * 2, lh,
+                         HSD_TIP, d->font);
+
+        d->hok = HEdCtl(hwnd, L"BUTTON", L"插入",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                        cw - pad - HSD_S(d, 180), ch - HSD_S(d, 40),
+                        HSD_S(d, 84), bh, HSD_OK, d->font);
+        d->hcan = HEdCtl(hwnd, L"BUTTON", L"关闭",
+                         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                         cw - pad - HSD_S(d, 88), ch - HSD_S(d, 40),
+                         HSD_S(d, 84), bh, HSD_CAN, d->font);
+
+        HStdFillCats(d);
+        HStdFillParts(d);
+        if (d->part_sel >= 0)
+            HStdLoadInsts(d);
+        HStdFillInsts(d);
+        HStdShowPreview(d);
+        HStdInfoUpdate(d);
+        return 0;
+    }
+
+    case WM_COMMAND:
+    {
+        int id   = LOWORD(wp);
+        int code = HIWORD(wp);
+
+        if (d == NULL)
+            break;
+
+        if (id == HSD_CAT && code == LBN_SELCHANGE)
+        {
+            int sel = (int)SendMessageW(d->hcat, LB_GETCURSEL, 0, 0);
+
+            if (sel >= 0 && sel < d->ncat)
+            {
+                d->cat_sel  = sel;
+                d->inserted = 0;
+                HStdScanParts(d);
+                HStdFillParts(d);
+                if (d->part_sel >= 0)
+                    HStdLoadInsts(d);
+                HStdFillInsts(d);
+                HStdShowPreview(d);
+                HStdInfoUpdate(d);
+            }
+            return 0;
+        }
+        if (id == HSD_PART && (code == LBN_SELCHANGE || code == LBN_DBLCLK))
+        {
+            int sel = (int)SendMessageW(d->hpart, LB_GETCURSEL, 0, 0);
+
+            if (sel >= 0 && sel < d->npart)
+            {
+                d->part_sel = sel;
+                d->inserted = 0;
+                HStdLoadInsts(d);
+                HStdFillInsts(d);
+                HStdShowPreview(d);
+                HStdInfoUpdate(d);
+            }
+            return 0;
+        }
+        if (id == HSD_INST && code == LBN_SELCHANGE)
+        {
+            int sel = (int)SendMessageW(d->hinst, LB_GETCURSEL, 0, 0);
+
+            if (sel >= 0 && sel < d->ninst)
+            {
+                d->inst_sel = sel;
+                HStdInfoUpdate(d);
+            }
+            return 0;
+        }
+        if (id == HSD_INST && code == LBN_DBLCLK)
+        {
+            if (d->part_sel >= 0 && d->part_sel < d->npart)
+            {
+                d->req_insert = 1;      /* 关窗后执行，见 HStdLibAct 里的说明 */
+                d->done       = 1;
+            }
+            return 0;
+        }
+        if (id == HSD_OK)
+        {
+            if (d->part_sel >= 0 && d->part_sel < d->npart)
+            {
+                d->req_insert = 1;
+                d->done       = 1;
+            }
+            return 0;
+        }
+        if (id == HSD_CAN)
+        {
+            d->done = 1;
+            return 0;
+        }
+        break;
+    }
+
+    case WM_CLOSE:
+        if (d != NULL)
+            d->done = 1;
+        return 0;                 /* 自己收尾，不走 DefWindowProc 销毁 */
+
+    case WM_DESTROY:
+        return 0;                 /* 千万别 PostQuitMessage，会杀掉 Creo 的消息循环 */
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static int HStdDlgShow(HStdDlg *d)
+{
+    static int  registered = 0;
+    HINSTANCE   hi;
+    HWND        owner;
+    WNDCLASSEXW wc;
+    RECT        rc;
+    MSG         m;
+    int         w, h, x, y;
+
+    hi = GetModuleHandleW(NULL);
+
+    if (!registered)
+    {
+        memset(&wc, 0, sizeof(wc));
+        wc.cbSize        = sizeof(wc);
+        wc.style         = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc   = HStdDlgProc;
+        wc.hInstance     = hi;
+        wc.hCursor       = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"H_StdLibDlg";
+        if (RegisterClassExW(&wc) == 0
+            && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        {
+            HLog("HStdDlgShow: RegisterClass failed %lu\n",
+                 (unsigned long)GetLastError());
+            return 0;
+        }
+        registered = 1;
+    }
+
+    {
+        HDC hdc = GetDC(NULL);
+        int dpi = (hdc != NULL) ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
+
+        if (hdc != NULL)
+            ReleaseDC(NULL, hdc);
+        if (dpi <= 0)
+            dpi = 96;
+        d->sc = MulDiv(dpi, 100, 96);
+        if (d->sc < 100)
+            d->sc = 100;
+        if (d->sc > 300)
+            d->sc = 300;
+    }
+
+    rc.left   = 0;
+    rc.top    = 0;
+    rc.right  = HSD_S(d, 1010);        /* 三列 + 预览列 */
+    rc.bottom = HSD_S(d, 560);
+    AdjustWindowRectEx(&rc, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE,
+                       WS_EX_DLGMODALFRAME);
+    w = rc.right - rc.left;
+    h = rc.bottom - rc.top;
+
+    owner = GetActiveWindow();
+    if (owner != NULL && GetWindowRect(owner, &rc) && (rc.right - rc.left) > 200)
+    {
+        x = rc.left + ((rc.right - rc.left) - w) / 2;
+        y = rc.top + ((rc.bottom - rc.top) - h) / 2;
+    }
+    else
+    {
+        x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
+        y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
+    }
+
+    d->hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"H_StdLibDlg",
+                              L"标准件库 — 选规格 / 插入装配",
+                              WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                              x, y, w, h, owner, NULL, hi, d);
+    if (d->hwnd == NULL)
+    {
+        HLog("HStdDlgShow: CreateWindow failed %lu\n",
+             (unsigned long)GetLastError());
+        return 0;
+    }
+
+    if (owner != NULL)
+        EnableWindow(owner, FALSE);
+    ShowWindow(d->hwnd, SW_SHOW);
+    UpdateWindow(d->hwnd);
+    SetForegroundWindow(d->hwnd);
+
+    while (d->done == 0 && GetMessageW(&m, NULL, 0, 0) > 0)
+    {
+        if (!IsDialogMessageW(d->hwnd, &m))
+        {
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+    }
+
+    if (owner != NULL)
+    {
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+    }
+    if (IsWindow(d->hwnd))
+        DestroyWindow(d->hwnd);
+    d->hwnd = NULL;
+    if (d->prevbm != NULL)              /* 位图挂在 STATIC 上，窗口已销毁，这里删掉 */
+    {
+        DeleteObject(d->prevbm);
+        d->prevbm = NULL;
+    }
+    d->hprev = NULL;
+    d->hnote = NULL;
+    if (d->font != NULL && d->font != (HFONT)GetStockObject(DEFAULT_GUI_FONT))
+        DeleteObject(d->font);
+    d->font = NULL;
+
+    HLog("HStdDlgShow: ok=%d inserted=%d\n", d->ok, d->inserted);
+    return d->ok;
+}
+
+static uiCmdAccessState HStdAccess(uiCmdAccessMode access_mode)
+{
+    return ACCESS_AVAILABLE;
+}
+
+static int HStdLibAct(uiCmdCmdId command, uiCmdValue *p_value,
+                      void *p_push_command_data)
+{
+    ProMdl     mdl = NULL;
+    ProMdlType t   = PRO_MDL_UNUSED;
+    HStdDlg  *d    = &g_hstd;
+
+    (void)command;
+    (void)p_value;
+    (void)p_push_command_data;
+
+    if (ProMdlCurrentGet(&mdl) != PRO_TK_NO_ERROR || mdl == NULL)
+    {
+        HMsg("TD_ASSY_ONLY");
+        return 0;
+    }
+    ProMdlTypeGet(mdl, &t);
+    if (t != PRO_MDL_ASSEMBLY)
+    {
+        HMsg("TD_ASSY_ONLY");
+        return 0;
+    }
+
+    memset(d, 0, sizeof(*d));
+    d->cat_sel  = -1;
+    d->part_sel = -1;
+    d->inst_sel = -1;
+
+    if (!HStdRootW(d->root, PRO_PATH_SIZE))
+    {
+        HMsg("TD_STD_NODIR");
+        return 0;
+    }
+    if (HStdScanCats(d) == 0)
+    {
+        HMsg("TD_STD_EMPTY");
+        return 0;
+    }
+    d->cat_sel = 0;
+    HStdScanParts(d);
+    if (d->part_sel >= 0)
+        HStdLoadInsts(d);
+
+    HStdDlgShow(d);
+
+    /* 插入动作放在窗口关掉之后做。
+       为什么：在自建的模态 Win32 消息循环里调 Pro/TOOLKIT，接口内部一旦要
+       弹提示（比如族表实例未验证时的确认框）就拿不到消息，实测
+       ProFaminstanceCheck 直接回 -25 (PRO_TK_ABORT)。挪到 Creo 自己的
+       上下文里执行，这条路才通。 */
+    if (d->req_insert)
+    {
+        d->req_insert = 0;
+        HStdInsertOne(d);
+    }
     return 0;
 }
 
@@ -8476,6 +10450,7 @@ int user_initialize(
     uiCmdCmdId  cmd_openinplace, cmd_batchbackup;
     uiCmdCmdId  cmd_openviewinplace, cmd_open3d;
     uiCmdCmdId  cmd_viewnormal, cmd_eqcrv;
+    uiCmdCmdId  cmd_stdlib;
     ProFileName msgfile;
     int         i;
     char        helpkey[PRO_LINE_SIZE];
@@ -8709,6 +10684,14 @@ int user_initialize(
         ProStringToWstring(errbuf, "H: fail to add command");
         return -1;
     }
+    status = ProCmdActionAdd(CMD_STDLIB, (uiCmdCmdActFn)HStdLibAct,
+        uiProe2ndImmediate, HStdAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_stdlib);
+    HLog("ProCmdActionAdd(StdLib    ) -> %d\n", (int)status);
+    if (status != PRO_TK_NO_ERROR)
+    {
+        ProStringToWstring(errbuf, "H: fail to add command");
+        return -1;
+    }
     status = ProCmdActionAdd(CMD_OPENWORKDIR, (uiCmdCmdActFn)HOpenWorkDirAct,
         uiProe2ndImmediate, HExportAccess, PRO_B_TRUE, PRO_B_FALSE, &cmd_openworkdir);
     HLog("ProCmdActionAdd(OpenWorkDir) -> %d\n", (int)status);
@@ -8837,6 +10820,7 @@ int user_initialize(
             /* 装配 / 基准 */
             { &cmd_openinplace,    "h_openinplace.png"    },
             { &cmd_eqcrv,          "h_eqcrv.png"          },
+            { &cmd_stdlib,         "h_stdlib.png"         },
             /* 工程图 */
             { &cmd_openviewinplace,"h_openviewinplace.png"},
             { &cmd_open3d,         "h_open3d.png"         },
@@ -8948,6 +10932,8 @@ int user_initialize(
         HLog("ProCmdDesignate(ViewNormal ) -> %d\n", (int)status);
         status = ProCmdDesignate(cmd_eqcrv, CMD_EQCRV, CMD_EQCRV ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(EqCurve    ) -> %d\n", (int)status);
+        status = ProCmdDesignate(cmd_stdlib, CMD_STDLIB, CMD_STDLIB ".Help", cmd_desc, msgfile);
+        HLog("ProCmdDesignate(StdLib    ) -> %d\n", (int)status);
         status = ProCmdDesignate(cmd_batchbackup, CMD_BATCHBACKUP, CMD_BATCHBACKUP ".Help", cmd_desc, msgfile);
         HLog("ProCmdDesignate(BatchBackup) -> %d\n", (int)status);
         for (i = 0; i < H_SCALE_COUNT; i++)

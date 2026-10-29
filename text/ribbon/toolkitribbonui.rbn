@@ -13,7 +13,7 @@
 1 onCreation 
 2 mNumComments 0
 2 mDate 
-1 groupList [11]
+1 groupList [12]
 2 groupList 
 3 ChildUnion(RbnDBGroup) ->
 4 RbnDBInheritContainer 
@@ -894,6 +894,30 @@
 4 mBitmap 
 4 mPlugin 
 4 mGroupType 1
+2 groupList 
+3 ChildUnion(RbnDBGroup) ->
+4 RbnDBInheritContainer 
+5 mName user_custom_group_h_std
+5 mType 12
+5 mLabel 标准件
+5 mAncestor 
+5 mKeyTip 
+5 mCustom 1
+5 Attributes 
+5 containerChildrenArray [1]
+6 containerChildrenArray 
+7 ChildUnion(RbnDBCommand) ->
+8 mName H_StdLib
+8 mType 1
+8 Attributes 
+9 mUiAttribs [1]
+10 mUiAttribs ->
+11 mKey 6
+11 mValue Small
+4 mToolLauncher 
+4 mBitmap 
+4 mPlugin 
+4 mGroupType 1
 1 pageList [5]
 2 pageList 
 3 ChildUnion(RbnDBPage) ->
@@ -960,7 +984,7 @@
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [6]
+5 containerChildrenArray [7]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_session
@@ -994,6 +1018,12 @@
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_datum
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_std
 8 mType 15
 8 Attributes 
 8 mRuntimeRemoved 0
@@ -1009,7 +1039,7 @@
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [6]
+5 containerChildrenArray [7]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_session
@@ -1043,6 +1073,12 @@
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_datum
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_std
 8 mType 15
 8 Attributes 
 8 mRuntimeRemoved 0
@@ -1058,7 +1094,7 @@
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [6]
+5 containerChildrenArray [7]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_session
@@ -1092,6 +1128,12 @@
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_datum
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_std
 8 mType 15
 8 Attributes 
 8 mRuntimeRemoved 0
@@ -1107,7 +1149,7 @@
 5 mKeyTip 
 5 mCustom 1
 5 Attributes 
-5 containerChildrenArray [6]
+5 containerChildrenArray [7]
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_session
@@ -1141,6 +1183,12 @@
 6 containerChildrenArray 
 7 ChildUnion(RbnDBGroupRef) ->
 8 mName user_custom_group_h_datum
+8 mType 15
+8 Attributes 
+8 mRuntimeRemoved 0
+6 containerChildrenArray 
+7 ChildUnion(RbnDBGroupRef) ->
+8 mName user_custom_group_h_std
 8 mType 15
 8 Attributes 
 8 mRuntimeRemoved 0

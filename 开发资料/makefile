@@ -18,7 +18,7 @@ LINK = link.exe
 TARGET = H.dll
 OBJS   = src\h_main.obj
 
-SYSLIBS = winspool.lib ws2_32.lib netapi32.lib advapi32.lib mpr.lib version.lib user32.lib gdi32.lib shell32.lib ole32.lib
+SYSLIBS = winspool.lib ws2_32.lib netapi32.lib advapi32.lib mpr.lib version.lib user32.lib gdi32.lib shell32.lib ole32.lib windowscodecs.lib
 TKLIB   = "$(TOOLKIT_LIB)\protk_dll_NU.lib" "$(TOOLKIT_LIB)\protk_dllmd_NU.lib" "$(TOOLKIT_LIB)\protoolkit_NU.lib" "$(TOOLKIT_LIB)\ucore.lib" "$(TOOLKIT_LIB)\udata.lib"
 
 all: $(TARGET)

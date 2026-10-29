@@ -69,6 +69,9 @@ MAP = [
     # —— 基准 / 几何 ——
     ("eqcrv",          "crv_tp_spline_btn"),     # 方程曲线：样条
 
+    # —— 标准件 ——
+    ("stdlib",         "family"),                # 标准件库：族表
+
     # —— 工程图 ——
     ("openviewinplace", "dwg_view_menu"),        # 按视图方向开 3D：图纸 + 箭头指向实体
     ("open3d",         "3d_position"),           # 打开 3D
